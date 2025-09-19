@@ -14,11 +14,12 @@ A high-performance RAG (Retrieval-Augmented Generation) system that uses Google'
 
 - 📚 **Enhanced PDF Processing**: Loads and extracts text and tables from PDF files
 - 📊 **Table Extraction**: Preserves table structure and data using pdfplumber
+- 📄 **Page Reference Tracking**: Automatically tracks and displays page numbers for all sources
 - 🧠 **Smart Chunking**: Breaks documents into optimal chunks for retrieval
 - 🤖 **Ollama Integration**: Uses local Ollama models for embeddings and generation
 - 💾 **Vector Storage**: Stores embeddings in ChromaDB for fast retrieval
 - 🔍 **Interactive Queries**: Simple command-line interface for asking questions
-- 📖 **Source Attribution**: Shows which documents were used to answer questions
+- 📖 **Precise Source Attribution**: Shows which documents and specific page numbers were used
 
 ## Quick Start
 
@@ -116,17 +117,29 @@ llm-rag/
 📝 Answer: Based on the documents, the main topics include...
 
 📚 Sources:
-  1. research_paper_1.pdf
+  1. research_paper_1.pdf (pp. 3-5)
      Preview: This paper discusses machine learning approaches...
 ```
+
+### Page Reference System
+
+The enhanced RAG system automatically tracks and displays page numbers for all source citations:
+
+- **Single page**: `paper.pdf (p. 5)`
+- **Page range**: `paper.pdf (pp. 3-5)`
+- **Multiple pages**: `paper.pdf (pp. 2, 4-6)`
+- **Multiple sources**: Each source shows its own page references
+
+This makes it easy to find and verify information in the original documents.
 
 ### Example Questions to Try
 
 - "What are the main research topics covered?"
-- "What methodologies are used in these studies?"
+- "What methodologies are used in these studies?" 
 - "Can you summarize the key findings?"
 - "What are the limitations mentioned in the research?"
 - "What future work is suggested?"
+- "Show me the results from the performance comparison table"
 
 ## Configuration
 

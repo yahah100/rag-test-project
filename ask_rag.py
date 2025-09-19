@@ -11,6 +11,7 @@ This version uses:
 
 import os
 import logging
+import re
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -174,6 +175,71 @@ class ImprovedPDFRAG:
         logger.info(f"🤖 Ollama model: {ollama_model}")
         logger.info(f"🧠 Embedding model: {embedding_model}")
         logger.info(f"💾 Persist directory: {persist_directory}")
+    
+    def _extract_page_numbers(self, content: str) -> List[int]:
+        """
+        Extract page numbers from chunk content based on page markers.
+        
+        Args:
+            content (str): Document chunk content
+            
+        Returns:
+            List[int]: List of page numbers found in the content
+        """
+        # Find all page markers like "--- Page 5 ---"
+        page_pattern = r'--- Page (\d+) ---'
+        matches = re.findall(page_pattern, content)
+        
+        # Convert to integers and remove duplicates while preserving order
+        page_numbers = []
+        seen = set()
+        for match in matches:
+            page_num = int(match)
+            if page_num not in seen:
+                page_numbers.append(page_num)
+                seen.add(page_num)
+        
+        return sorted(page_numbers)
+    
+    def _format_page_reference(self, page_numbers: List[int]) -> str:
+        """
+        Format page numbers into a readable reference string.
+        
+        Args:
+            page_numbers (List[int]): List of page numbers
+            
+        Returns:
+            str: Formatted page reference (e.g., "p. 5", "pp. 3-5", "pp. 2, 4-6")
+        """
+        if not page_numbers:
+            return ""
+        
+        if len(page_numbers) == 1:
+            return f"p. {page_numbers[0]}"
+        
+        # Group consecutive pages into ranges
+        ranges = []
+        start = page_numbers[0]
+        end = start
+        
+        for i in range(1, len(page_numbers)):
+            if page_numbers[i] == end + 1:
+                end = page_numbers[i]
+            else:
+                # End of current range
+                if start == end:
+                    ranges.append(str(start))
+                else:
+                    ranges.append(f"{start}-{end}")
+                start = end = page_numbers[i]
+        
+        # Add the final range
+        if start == end:
+            ranges.append(str(start))
+        else:
+            ranges.append(f"{start}-{end}")
+        
+        return f"pp. {', '.join(ranges)}"
     
     def _format_table_as_text(self, table: List[List[str]], table_index: int) -> str:
         """
@@ -475,7 +541,6 @@ Answer:"""
             template=prompt_template,
             input_variables=["context", "question"]
         )
-        logger.info(f"PROMPT: {PROMPT}")
         # Create the QA chain
         self.qa_chain = RetrievalQA.from_chain_type(
             llm=self.llm,
@@ -534,6 +599,8 @@ Answer:"""
         
         try:
             result = self.qa_chain.invoke({"query": question})
+
+            logger.info(f"🔍 Result from RAG system: {result}")
             
             response = {
                 "question": question,
@@ -541,11 +608,24 @@ Answer:"""
                 "source_documents": []
             }
             
-            # Add source information
+            # Add source information with page numbers
             for doc in result.get("source_documents", []):
+                # Extract page numbers from the document content
+                page_numbers = self._extract_page_numbers(doc.page_content)
+                page_reference = self._format_page_reference(page_numbers)
+                
+                # Create content preview (remove page markers for cleaner display)
+                content_for_preview = doc.page_content
+                content_for_preview = re.sub(r'\n--- Page \d+ ---\n', ' ', content_for_preview)
+                content_preview = content_for_preview[:200].strip()
+                if len(content_for_preview) > 200:
+                    content_preview += "..."
+                
                 source_info = {
                     "filename": doc.metadata.get("filename", "Unknown"),
-                    "content_preview": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
+                    "page_reference": page_reference,
+                    "pages": page_numbers,
+                    "content_preview": content_preview
                 }
                 response["source_documents"].append(source_info)
             
@@ -602,7 +682,15 @@ def main():
                 if response["source_documents"]:
                     print(f"\n📚 Sources:")
                     for i, source in enumerate(response["source_documents"], 1):
-                        print(f"  {i}. {source['filename']}")
+                        # Format source with page reference if available
+                        filename = source['filename']
+                        page_ref = source.get('page_reference', '')
+                        
+                        if page_ref:
+                            print(f"  {i}. {filename} ({page_ref})")
+                        else:
+                            print(f"  {i}. {filename}")
+                        
                         print(f"     Preview: {source['content_preview']}")
                 
                 print("\n" + "─" * 60)
