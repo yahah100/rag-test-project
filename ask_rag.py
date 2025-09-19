@@ -24,6 +24,11 @@ except ImportError:
 
 import pypdf
 import pdfplumber
+import fitz  
+import requests
+import base64
+import io
+from PIL import Image
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaLLM
 from langchain_chroma import Chroma
@@ -32,6 +37,7 @@ from langchain.chains import RetrievalQA
 from langchain_core.prompts import PromptTemplate
 from langchain.schema.embeddings import Embeddings
 from sentence_transformers import SentenceTransformer
+from input_arguments import parse_arguments
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -131,7 +137,7 @@ class EmbeddingGemmaEmbeddings(Embeddings):
         return embedding[0].tolist()
 
 
-class ImprovedPDFRAG:
+class PDFRAG:
     """
     RAG system using EmbeddingGemma for embeddings and Ollama for generation.
     
@@ -147,7 +153,16 @@ class ImprovedPDFRAG:
                  ollama_model: str = "gemma3:1b",
                  embedding_model: str = "google/embeddinggemma-300m",
                  persist_directory: str = "./chroma_db",
-                 k_similar_chunks: int = 2
+                 k_similar_chunks: int = 2,
+                 enable_vision: bool = True,
+                 vision_model: str = "gemma3:4b",
+                 chunk_size: int = 1000,
+                 chunk_overlap: int = 200,
+                 min_image_width: int = 50,
+                 min_image_height: int = 50,
+                 vision_timeout: int = 15,
+                 max_vision_retries: int = 1,
+                 max_failures_before_disable: int = 5
         ):
         """
         Initialize the RAG system.
@@ -158,23 +173,47 @@ class ImprovedPDFRAG:
             embedding_model (str): HuggingFace embedding model
             persist_directory (str): Directory to persist ChromaDB data
             k_similar_chunks (int): Number of similar chunks to retrieve
+            enable_vision (bool): Enable vision processing for images
+            vision_model (str): Ollama vision model for image analysis
+            chunk_size (int): Maximum size of text chunks for embedding
+            chunk_overlap (int): Overlap between consecutive text chunks
+            min_image_width (int): Minimum image width in pixels
+            min_image_height (int): Minimum image height in pixels
+            vision_timeout (int): Timeout in seconds for vision model analysis
+            max_vision_retries (int): Maximum retries for failed vision analysis
+            max_failures_before_disable (int): Disable vision after this many failures
         """
         self.pdf_folder = Path(pdf_folder)
         self.ollama_model = ollama_model
         self.embedding_model = embedding_model
         self.persist_directory = persist_directory
         self.k_similar_chunks = k_similar_chunks
+        
+        # Store chunking parameters
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        
         # Initialize components
         self.embeddings = None
         self.llm = None
         self.vectorstore = None
         self.qa_chain = None
         
-        logger.info("🚀 Initializing  RAG System")
+        logger.info("🚀 Initializing Enhanced RAG System with Vision")
         logger.info(f"📚 PDF folder: {self.pdf_folder}")
         logger.info(f"🤖 Ollama model: {ollama_model}")
         logger.info(f"🧠 Embedding model: {embedding_model}")
         logger.info(f"💾 Persist directory: {persist_directory}")
+        logger.info(f"🔍 Chunking: {chunk_size} chars (overlap: {chunk_overlap})")
+        
+        # Vision processing settings
+        self.vision_model = vision_model
+        self.process_images = enable_vision  # Use parameter to control vision processing
+        self.min_image_size = (min_image_width, min_image_height)  # Skip very small images
+        self.vision_timeout = vision_timeout  # Timeout to avoid hanging
+        self.max_vision_retries = max_vision_retries  # Retries for failed vision analysis
+        self.vision_failures = 0  # Track vision failures
+        self.max_failures_before_disable = max_failures_before_disable  # Disable vision after too many failures
     
     def _extract_page_numbers(self, content: str) -> List[int]:
         """
@@ -241,6 +280,29 @@ class ImprovedPDFRAG:
         
         return f"pp. {', '.join(ranges)}"
     
+    def _extract_image_references(self, content: str) -> List[str]:
+        """
+        Extract image references from chunk content.
+        
+        Args:
+            content (str): Document chunk content
+            
+        Returns:
+            List[str]: List of image references found in the content
+        """
+        import re
+        
+        # Find image markers like "[IMAGE 1 on Page 3]"
+        image_pattern = r'\[IMAGE (\d+) on Page (\d+)\]'
+        matches = re.findall(image_pattern, content)
+        
+        # Format as readable references
+        image_refs = []
+        for img_num, page_num in matches:
+            image_refs.append(f"Image {img_num} (p. {page_num})")
+        
+        return image_refs
+    
     def _format_table_as_text(self, table: List[List[str]], table_index: int) -> str:
         """
         Format a table extracted by pdfplumber as readable text for RAG processing.
@@ -295,17 +357,204 @@ class ImprovedPDFRAG:
             logger.warning(f"⚠️ Error formatting table {table_index}: {str(e)}")
             return f"\n[TABLE {table_index}] - Error formatting table content\n"
     
+    def _analyze_image_with_vision_model(self, image_base64: str, page_num: int, img_index: int) -> str:
+        """
+        Analyze an image using the vision-capable Ollama model.
+        
+        Args:
+            image_base64 (str): Base64 encoded image
+            page_num (int): Page number where image was found
+            img_index (int): Index of image on the page
+            
+        Returns:
+            str: Description of the image content
+        """
+        try:
+            # Prepare the prompt for image analysis
+            prompt = (
+                "Analyze this image in detail. Focus on:\n"
+                "- Any text, labels, or captions visible\n"
+                "- Charts, graphs, or data visualizations\n"
+                "- Diagrams, flowcharts, or technical illustrations\n"
+                "- Key visual information that would be useful for document search\n"
+                "- Scientific figures, mathematical equations, or formulas\n"
+                "Provide a concise but comprehensive description."
+            )
+            
+            # Make request to Ollama API
+            response = requests.post(
+                "http://localhost:11434/api/generate",
+                json={
+                    "model": self.vision_model,
+                    "prompt": prompt,
+                    "images": [image_base64],
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.1,  # Lower temperature for more consistent descriptions
+                        "top_p": 0.9
+                    }
+                },
+                timeout=self.vision_timeout  # Configurable timeout
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                description = result.get("response", "").strip()
+                
+                if description:
+                    logger.debug(f"✅ Analyzed image {img_index + 1} on page {page_num + 1}")
+                    return description
+                else:
+                    logger.warning(f"⚠️ Empty response for image {img_index + 1} on page {page_num + 1}")
+            else:
+                logger.warning(f"⚠️ Vision API error {response.status_code} for image {img_index + 1}")
+                
+        except requests.exceptions.Timeout:
+            logger.warning(f"⚠️  Timeout analyzing image {img_index + 1} on page {page_num + 1}")
+            self.vision_failures += 1
+            self._check_disable_vision()
+        except Exception as e:
+            logger.warning(f"⚠️ Error analyzing image {img_index + 1} on page {page_num + 1}: {str(e)}")
+            self.vision_failures += 1
+            self._check_disable_vision()
+        
+        return ""
+    
+    def _check_disable_vision(self):
+        """Disable vision processing if too many failures occur."""
+        if self.vision_failures >= self.max_failures_before_disable and self.process_images:
+            logger.warning(f"⚠️ Disabling vision processing after {self.vision_failures} failures")
+            logger.info("📚 Continuing with text and table extraction only")
+            self.process_images = False
+    
+    def _test_vision_model(self):
+        """Test if the vision model is available and working."""
+        try:
+            logger.info(f"🧪 Testing vision model: {self.vision_model}")
+            response = requests.post(
+                "http://localhost:11434/api/generate",
+                json={
+                    "model": self.vision_model,
+                    "prompt": "Hello, this is a test.",
+                    "stream": False
+                },
+                timeout=10  # Short timeout for test
+            )
+            
+            if response.status_code == 200:
+                logger.info("✅ Vision model test successful")
+            else:
+                logger.warning(f"⚠️ Vision model test failed with status {response.status_code}")
+                if response.status_code == 404:
+                    logger.warning(f"💡 Model '{self.vision_model}' not found. Install with: ollama pull {self.vision_model}")
+                    logger.info("🔄 Disabling vision processing and continuing with text/tables only")
+                    self.process_images = False
+                    
+        except requests.exceptions.Timeout:
+            logger.warning(f"⚠️ Vision model test timed out")
+            logger.info("🔄 Disabling vision processing due to slow response")
+            self.process_images = False
+        except Exception as e:
+            logger.warning(f"⚠️ Vision model test failed: {str(e)}")
+            logger.info("🔄 Disabling vision processing and continuing with text/tables only")
+            self.process_images = False
+    
+    def _extract_and_analyze_images(self, fitz_doc, page_num: int) -> tuple[str, int]:
+        """
+        Extract images from a PDF page and analyze them with vision model.
+        
+        Args:
+            fitz_doc: PyMuPDF document object
+            page_num (int): Page number (0-based)
+            
+        Returns:
+            tuple[str, int]: (image_content_text, images_processed_count)
+        """
+        if not self.process_images:
+            return "", 0
+        
+        try:
+            page = fitz_doc.load_page(page_num)
+            image_list = page.get_images(full=True)
+            
+            if not image_list:
+                return "", 0
+            
+            logger.debug(f"🖼️ Found {len(image_list)} images on page {page_num + 1}")
+            
+            images_content = ""
+            images_processed = 0
+            
+            for img_index, img in enumerate(image_list):
+                try:
+                    # Extract image data
+                    xref = img[0]
+                    base_image = fitz_doc.extract_image(xref)
+                    image_bytes = base_image["image"]
+                    image_ext = base_image["ext"]
+                    
+                    # Load image with PIL
+                    image = Image.open(io.BytesIO(image_bytes))
+                    
+                    # Skip very small images (likely decorative)
+                    if image.size[0] < self.min_image_size[0] or image.size[1] < self.min_image_size[1]:
+                        logger.debug(f"Skipping small image {img_index + 1} ({image.size})")
+                        continue
+                    
+                    # Convert to RGB if necessary
+                    if image.mode != 'RGB':
+                        image = image.convert('RGB')
+                    
+                    # Resize large images to save processing time
+                    max_size = (800, 800)
+                    if image.size[0] > max_size[0] or image.size[1] > max_size[1]:
+                        image.thumbnail(max_size, Image.Resampling.LANCZOS)
+                    
+                    # Convert to base64 for API
+                    buffered = io.BytesIO()
+                    image.save(buffered, format="PNG", optimize=True)
+                    img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+                    
+                    # Analyze image with vision model
+                    description = self._analyze_image_with_vision_model(
+                        img_base64, page_num, img_index
+                    )
+                    
+                    if description:
+                        images_content += f"\n[IMAGE {img_index + 1} on Page {page_num + 1}]\n"
+                        images_content += f"Description: {description}\n"
+                        images_processed += 1
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to process image {img_index + 1} on page {page_num + 1}: {str(e)}")
+                    continue
+            
+            if images_processed > 0:
+                logger.info(f"🖼️ Processed {images_processed} images on page {page_num + 1}")
+            
+            return images_content, images_processed
+            
+        except Exception as e:
+            logger.error(f"❌ Error extracting images from page {page_num + 1}: {str(e)}")
+            return "", 0
+    
     def load_pdfs(self) -> List[Document]:
         """
-        Load all PDF files from the specified folder and extract text and tables.
+        Load all PDF files from the specified folder and extract text, tables, and images.
         
-        Enhanced implementation that extracts both text and table data using pdfplumber,
-        with pypdf as fallback for text extraction.
+        Enhanced implementation that extracts:
+        - Text content using pdfplumber (with pypdf fallback)
+        - Table data using pdfplumber
+        - Image analysis using PyMuPDF + vision models
         
         Returns:
-            List[Document]: List of documents with text, tables, and metadata
+            List[Document]: List of documents with text, tables, images, and metadata
         """
-        logger.info(f"📚 Loading PDFs with enhanced table extraction from {self.pdf_folder}")
+        logger.info(f"📚 Loading PDFs with enhanced extraction (text, tables, images) from {self.pdf_folder}")
+        if self.process_images:
+            logger.info(f"🖼️ Vision processing enabled with model: {self.vision_model}")
+            # Test vision model availability
+            self._test_vision_model()
         documents = []
         
         if not self.pdf_folder.exists():
@@ -320,14 +569,17 @@ class ImprovedPDFRAG:
                 logger.info(f"🔄 Processing: {pdf_file.name}")
                 text_content = ""
                 tables_extracted = 0
+                images_extracted = 0
                 total_pages = 0
                 
-                # Try enhanced extraction with pdfplumber first
+                # Try enhanced extraction with pdfplumber + PyMuPDF first
                 try:
-                    with pdfplumber.open(pdf_file) as pdf:
-                        total_pages = len(pdf.pages)
+                    # Open with both libraries for comprehensive extraction
+                    with pdfplumber.open(pdf_file) as pdf_plumber:
+                        fitz_doc = fitz.open(pdf_file) if self.process_images else None
+                        total_pages = len(pdf_plumber.pages)
                         
-                        for page_num, page in enumerate(pdf.pages):
+                        for page_num, page in enumerate(pdf_plumber.pages):
                             page_content = f"\n--- Page {page_num + 1} ---\n"
                             
                             # Extract text
@@ -346,10 +598,21 @@ class ImprovedPDFRAG:
                                             page_content += table_text
                                             tables_extracted += 1
                             
+                            # Extract and analyze images
+                            if fitz_doc and self.process_images:
+                                image_content, page_images = self._extract_and_analyze_images(fitz_doc, page_num)
+                                if image_content:
+                                    page_content += image_content
+                                    images_extracted += page_images
+                            
                             text_content += page_content
+                        
+                        # Clean up fitz document
+                        if fitz_doc:
+                            fitz_doc.close()
                             
                     logger.info(f"✅ Enhanced extraction successful: {pdf_file.name} "
-                              f"({total_pages} pages, {tables_extracted} tables)")
+                              f"({total_pages} pages, {tables_extracted} tables, {images_extracted} images)")
                 
                 except Exception as pdfplumber_error:
                     logger.warning(f"⚠️ pdfplumber failed for {pdf_file.name}: {pdfplumber_error}")
@@ -381,14 +644,25 @@ class ImprovedPDFRAG:
                             "filename": pdf_file.name,
                             "total_pages": total_pages,
                             "tables_extracted": tables_extracted,
-                            "enhanced_extraction": tables_extracted > 0
+                            "images_extracted": images_extracted,
+                            "enhanced_extraction": tables_extracted > 0 or images_extracted > 0,
+                            "vision_enabled": self.process_images and images_extracted > 0
                         }
                     )
                     documents.append(doc)
                     
-                    extraction_type = "enhanced" if tables_extracted > 0 else "basic"
+                    # Determine extraction type based on features extracted
+                    extraction_features = []
+                    if tables_extracted > 0:
+                        extraction_features.append(f"{tables_extracted} tables")
+                    if images_extracted > 0:
+                        extraction_features.append(f"{images_extracted} images")
+                    
+                    extraction_type = "enhanced" if extraction_features else "basic"
+                    feature_text = f", {', '.join(extraction_features)}" if extraction_features else ""
+                    
                     logger.info(f"📄 Loaded {pdf_file.name} ({extraction_type}, "
-                              f"{total_pages} pages, {tables_extracted} tables)")
+                              f"{total_pages} pages{feature_text})")
                 else:
                     logger.warning(f"⚠️ No content extracted from {pdf_file.name}")
                     
@@ -396,10 +670,15 @@ class ImprovedPDFRAG:
                 logger.error(f"❌ Error processing {pdf_file.name}: {str(e)}")
         
         total_tables = sum(doc.metadata.get("tables_extracted", 0) for doc in documents)
+        total_images = sum(doc.metadata.get("images_extracted", 0) for doc in documents)
         enhanced_docs = sum(1 for doc in documents if doc.metadata.get("enhanced_extraction", False))
+        vision_docs = sum(1 for doc in documents if doc.metadata.get("vision_enabled", False))
         
         logger.info(f"🎉 Successfully loaded {len(documents)} documents "
-                   f"({enhanced_docs} with tables, {total_tables} tables total)")
+                   f"({enhanced_docs} enhanced: {total_tables} tables, {total_images} images)")
+        
+        if self.process_images and vision_docs > 0:
+            logger.info(f"🖼️ Vision analysis completed for {vision_docs} documents")
         return documents
     
     def chunk_documents(self, documents: List[Document]) -> List[Document]:
@@ -417,8 +696,8 @@ class ImprovedPDFRAG:
         logger.info("✂️ Chunking documents for optimal retrieval")
         
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
             length_function=len,
             separators=["\n\n", "\n", " ", ""]
         )
@@ -608,15 +887,19 @@ Answer:"""
                 "source_documents": []
             }
             
-            # Add source information with page numbers
+            # Add source information with page numbers and image references
             for doc in result.get("source_documents", []):
                 # Extract page numbers from the document content
                 page_numbers = self._extract_page_numbers(doc.page_content)
                 page_reference = self._format_page_reference(page_numbers)
                 
-                # Create content preview (remove page markers for cleaner display)
+                # Extract image references
+                image_references = self._extract_image_references(doc.page_content)
+                
+                # Create content preview (remove page and image markers for cleaner display)
                 content_for_preview = doc.page_content
                 content_for_preview = re.sub(r'\n--- Page \d+ ---\n', ' ', content_for_preview)
+                content_for_preview = re.sub(r'\[IMAGE \d+ on Page \d+\]\nDescription: ', 'Image: ', content_for_preview)
                 content_preview = content_for_preview[:200].strip()
                 if len(content_for_preview) > 200:
                     content_preview += "..."
@@ -625,6 +908,8 @@ Answer:"""
                     "filename": doc.metadata.get("filename", "Unknown"),
                     "page_reference": page_reference,
                     "pages": page_numbers,
+                    "image_references": image_references,
+                    "has_images": len(image_references) > 0,
                     "content_preview": content_preview
                 }
                 response["source_documents"].append(source_info)
@@ -641,24 +926,41 @@ def main():
     """
     Main function demonstrating the RAG system.
     """
-    print("🧠 Enhanced PDF RAG System")
-    print("🤝 EmbeddingGemma-300M + Ollama + Table Extraction")
+    # Parse command-line arguments
+    args = parse_arguments()
+    
+    print("🧠 Enhanced PDF RAG System with Vision")
+    print("🤝 EmbeddingGemma-300M + Ollama + Table + Image Analysis")
     print("=" * 60)
     
     try:
-        # Initialize RAG system
-        rag_system = ImprovedPDFRAG(
-            pdf_folder="datasets",
-            ollama_model="gemma3:4b-it-qat",
-            embedding_model="google/embeddinggemma-300m"
+        # Initialize RAG system with parsed arguments
+        rag_system = PDFRAG(
+            pdf_folder=args.pdf_folder,
+            ollama_model=args.ollama_model,
+            embedding_model=args.embedding_model,
+            persist_directory=args.persist_directory,
+            k_similar_chunks=args.k_similar_chunks,
+            enable_vision=not args.no_vision,
+            vision_model=args.vision_model,
+            chunk_size=args.chunk_size,
+            chunk_overlap=args.chunk_overlap,
+            min_image_width=args.min_image_width,
+            min_image_height=args.min_image_height,
+            vision_timeout=args.vision_timeout,
+            max_vision_retries=args.max_vision_retries,
+            max_failures_before_disable=args.max_failures_before_disable
         )
         
         print("\n⚙️ Initializing RAG system...")
         print("📥 This will download EmbeddingGemma-300M on first run...")
-        rag_system.initialize_system()
+        print("🖼️ Vision analysis uses Gemma 3 multimodal capabilities")
+        rag_system.initialize_system(force_rebuild=args.force_rebuild)
         
-        print("\n🎉 RAG system ready!")
+        print("\n🎉 Enhanced RAG system ready!")
         print("💡 Now using EmbeddingGemma for embeddings + Ollama for generation")
+        print("📊 Table extraction enabled with pdfplumber")
+        print("🖼️ Image analysis enabled with vision models")
         print("💡 Type 'quit' or 'exit' to stop.\n")
         
         # Interactive query loop
@@ -685,11 +987,25 @@ def main():
                         # Format source with page reference if available
                         filename = source['filename']
                         page_ref = source.get('page_reference', '')
+                        image_refs = source.get('image_references', [])
+                        has_images = source.get('has_images', False)
                         
+                        # Build reference string
+                        ref_parts = []
                         if page_ref:
-                            print(f"  {i}. {filename} ({page_ref})")
+                            ref_parts.append(page_ref)
+                        if image_refs:
+                            ref_parts.append(f"{len(image_refs)} image{'s' if len(image_refs) > 1 else ''}")
+                        
+                        if ref_parts:
+                            ref_string = f" ({', '.join(ref_parts)})"
+                            print(f"  {i}. {filename}{ref_string}")
                         else:
                             print(f"  {i}. {filename}")
+                        
+                        # Add image indicator if present
+                        if has_images:
+                            print(f"     🖼️ Contains visual content: {', '.join(image_refs)}")
                         
                         print(f"     Preview: {source['content_preview']}")
                 
@@ -708,8 +1024,8 @@ def main():
         print("\n💡 Make sure:")
         print("  - Internet connection (for downloading EmbeddingGemma)")
         print("  - Ollama is running (ollama serve)")
-        print(f"  - Ollama model is available (ollama pull gemma3:1b)")
-        print("  - PDF files are in the datasets folder")
+        print(f"  - Ollama model is available (ollama pull {args.ollama_model})")
+        print(f"  - PDF files are in the {args.pdf_folder} folder")
 
 
 if __name__ == "__main__":
