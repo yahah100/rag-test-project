@@ -1,0 +1,21 @@
+---
+description: Always use the project's virtual environment Python interpreter
+globs:
+alwaysApply: true
+---
+
+# Python Virtual Environment Rule
+
+Always use the project's specific Python interpreter located at:
+`/home/yannik/workspace/ucla/llm-rag/.venv/bin/python`
+
+## Rules:
+- When running Python commands in terminal, use the full path to the virtual environment Python interpreter
+- Never use system Python or generic `python` commands
+- This ensures consistent package versions and environment isolation
+
+## Examples:
+- Use: `/home/yannik/workspace/ucla/llm-rag/.venv/bin/python script.py`
+- Use: `/home/yannik/workspace/ucla/llm-rag/.venv/bin/python -m pip install package`
+- Don't use: `python script.py`
+- Don't use: `pip install package`
