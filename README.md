@@ -1,6 +1,6 @@
-# PDF RAG System with EmbeddingGemma + Ollama
+# Enhanced PDF RAG System with Vision
 
-A high-performance RAG (Retrieval-Augmented Generation) system that uses Google's EmbeddingGemma-300M for embeddings and Ollama for text generation to answer questions about PDF documents.
+A high-performance RAG (Retrieval-Augmented Generation) system that uses Google's EmbeddingGemma-300M for embeddings, Ollama for text generation, and vision models for comprehensive PDF analysis including text, tables, and images.
 
 ## 🚀 System Architecture
 
@@ -12,14 +12,16 @@ A high-performance RAG (Retrieval-Augmented Generation) system that uses Google'
 
 ## Features
 
-- 📚 **Enhanced PDF Processing**: Loads and extracts text and tables from PDF files
+- 📚 **Enhanced PDF Processing**: Loads and extracts text, tables, and images from PDF files
 - 📊 **Table Extraction**: Preserves table structure and data using pdfplumber
+- 🖼️ **Vision Analysis**: Analyzes images, charts, graphs, and diagrams using Gemma 3 multimodal models
 - 📄 **Page Reference Tracking**: Automatically tracks and displays page numbers for all sources
+- 🎯 **Multi-Content Search**: Search across text, tables, and image descriptions simultaneously
 - 🧠 **Smart Chunking**: Breaks documents into optimal chunks for retrieval
 - 🤖 **Ollama Integration**: Uses local Ollama models for embeddings and generation
 - 💾 **Vector Storage**: Stores embeddings in ChromaDB for fast retrieval
 - 🔍 **Interactive Queries**: Simple command-line interface for asking questions
-- 📖 **Precise Source Attribution**: Shows which documents and specific page numbers were used
+- 📖 **Comprehensive Source Attribution**: Shows documents, pages, and visual content references
 
 ## Quick Start
 
@@ -39,10 +41,14 @@ First, start Ollama and install a suitable model:
 # Start Ollama (in a separate terminal)
 ollama serve
 
-# Install a model (recommended options)
-ollama pull gemma3:4b-it-qat    # Recommended - quantized 4B model
-ollama pull gemma3:1b           # Faster, smaller model
-ollama pull llama3.2:1b         # Alternative lightweight option
+# Install models (recommended options)
+ollama pull gemma3:4b-it-qat    # Recommended - quantized 4B model with vision
+ollama pull gemma3:12b          # Better quality vision analysis (requires more memory)
+ollama pull gemma3:1b           # Faster, smaller model (limited vision capabilities)
+
+# Alternative vision models (optional)
+ollama pull llava:7b            # Dedicated vision model
+ollama pull llava:13b           # Higher quality vision model
 ```
 
 ### 3. Set Up HuggingFace Authentication
@@ -79,7 +85,10 @@ The RAG system uses a hybrid approach for optimal performance:
 ### System Architecture (EmbeddingGemma + Ollama)
 
 1. **Document Loading**: Reads PDF files from the `datasets/` folder
-2. **Enhanced Extraction**: Extracts text content and table data from each PDF page using pdfplumber
+2. **Multi-Modal Extraction**: 
+   - Text content using pdfplumber (with pypdf fallback)
+   - Table data preservation using pdfplumber  
+   - Image extraction and analysis using PyMuPDF + Gemma 3 vision
 3. **Smart Chunking**: Splits documents into 1000-character chunks with 200-character overlap
 4. **Embedding Generation**: Uses **EmbeddingGemma-300M** with task-specific prompts:
    - Documents: `"title: none | text: {content}"`
@@ -117,8 +126,12 @@ llm-rag/
 📝 Answer: Based on the documents, the main topics include...
 
 📚 Sources:
-  1. research_paper_1.pdf (pp. 3-5)
+  1. research_paper_1.pdf (pp. 3-5, 2 images)
+     🖼️ Contains visual content: Image 1 (p. 4), Image 2 (p. 5)
      Preview: This paper discusses machine learning approaches...
+  
+  2. methodology_paper.pdf (p. 12)
+     Preview: Image: Bar chart showing accuracy scores across different models...
 ```
 
 ### Page Reference System
@@ -140,6 +153,10 @@ This makes it easy to find and verify information in the original documents.
 - "What are the limitations mentioned in the research?"
 - "What future work is suggested?"
 - "Show me the results from the performance comparison table"
+- "Describe the charts and graphs in the results section"
+- "What does Figure 3 show about the system architecture?"
+- "Explain the data visualization on page 5"
+- "What trends are visible in the performance graphs?"
 
 ## Configuration
 
@@ -237,6 +254,9 @@ Custom embeddings implementation with task-specific prompts:
 Key libraries used:
 - `pypdf` - PDF text extraction (fallback)
 - `pdfplumber` - Enhanced PDF processing with table extraction
+- `pymupdf` (fitz) - Image extraction from PDFs
+- `pillow` - Image processing and manipulation
+- `requests` - API communication with Ollama vision models
 - `langchain` - LLM framework and document processing pipeline
 - `langchain-ollama` - Ollama integration for text generation
 - `langchain-chroma` - ChromaDB vector store integration
