@@ -106,11 +106,119 @@ The RAG system uses a hybrid approach for optimal performance:
 llm-rag/
 ├── datasets/                    # PDF files (your research papers)
 ├── ask_rag.py                  # 🚀 Main RAG system (EmbeddingGemma + Ollama)
+├── input_arguments.py          # ⚙️ Command-line argument parsing and configuration
 ├── set_hf_token.py            # 🔑 HuggingFace authentication setup
 ├── pyproject.toml             # Dependencies and project configuration
-├── chroma_db_improved/        # Vector database (created automatically)
+├── chroma_db/                 # Vector database (created automatically)
 ├── .env.example              # Environment variable template
 └── README.md                  # This documentation
+```
+
+## Command-Line Interface
+
+The RAG system now features a comprehensive command-line interface for easy configuration. All parameters can be customized without modifying code.
+
+### Quick Reference
+
+```bash
+# View all available options
+/home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py --help
+```
+
+### Command-Line Arguments
+
+**Model Configuration:**
+- `--ollama-model` - Ollama model for text generation (default: `gemma3:4b`)
+- `--embedding-model` - HuggingFace embedding model (default: `google/embeddinggemma-300m`)
+- `--vision-model` - Ollama vision model for image analysis (default: `gemma3:4b`)
+
+**Processing Configuration:**
+- `--pdf-folder` - Path to PDF files directory (default: `datasets`)
+- `--persist-directory` - ChromaDB storage location (default: `./chroma_db`)
+- `--k-similar-chunks` - Number of document chunks to retrieve (default: `2`)
+- `--force-rebuild` - Force rebuild of vector store from PDFs
+- `--no-vision` - Disable vision processing for faster operation
+
+**Text Chunking:**
+- `--chunk-size` - Maximum chunk size in characters (default: `1000`)
+- `--chunk-overlap` - Overlap between chunks in characters (default: `200`)
+
+**Vision Processing:**
+- `--min-image-width/height` - Minimum image dimensions in pixels (default: `50x50`)
+- `--vision-timeout` - Timeout per image analysis in seconds (default: `15`)
+- `--max-vision-retries` - Retries for failed vision analysis (default: `1`)
+- `--max-failures-before-disable` - Disable vision after failures (default: `5`)
+
+**General Options:**
+- `--verbose/-v` - Enable verbose logging
+- `--quiet/-q` - Enable quiet mode
+- `--help/-h` - Show help message
+
+## CLI Usage Examples
+
+### Basic Usage Scenarios
+
+```bash
+# Default configuration - recommended for most users
+/home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py
+
+# Fast mode - disable vision processing for speed
+/home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py --no-vision
+
+# High-quality mode - use larger models
+/home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py \
+    --ollama-model gemma3:7b \
+    --vision-model gemma3:7b
+```
+
+### Advanced Configuration Examples
+
+```bash
+# Custom PDF folder and database location
+/home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py \
+    --pdf-folder ./my-papers \
+    --persist-directory ./my-vector-db
+
+# Optimize for large documents
+/home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py \
+    --chunk-size 1500 \
+    --chunk-overlap 300 \
+    --k-similar-chunks 4
+
+# Force rebuild with different models
+/home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py \
+    --force-rebuild \
+    --ollama-model llama3.2 \
+    --embedding-model sentence-transformers/all-MiniLM-L6-v2
+
+# Vision-optimized settings
+/home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py \
+    --vision-model gemma3:7b \
+    --vision-timeout 30 \
+    --min-image-width 100 \
+    --min-image-height 100
+
+# Debugging and development
+/home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py \
+    --verbose \
+    --force-rebuild
+```
+
+### Production Deployment Examples
+
+```bash
+# Memory-optimized for server deployment
+/home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py \
+    --ollama-model gemma3:1b \
+    --no-vision \
+    --chunk-size 800 \
+    --quiet
+
+# High-throughput configuration
+/home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py \
+    --k-similar-chunks 1 \
+    --vision-timeout 10 \
+    --max-failures-before-disable 2
 ```
 
 ## Usage Examples
@@ -162,12 +270,43 @@ This makes it easy to find and verify information in the original documents.
 
 You can customize the system by modifying parameters in `ask_rag.py`:
 
+### Command-Line Arguments (Recommended)
+
+The system now supports comprehensive command-line configuration:
+
+```bash
+# Basic usage with default settings
+/home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py
+
+# Custom model configuration
+/home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py \
+    --ollama-model llama3.2 \
+    --embedding-model google/embeddinggemma-300m \
+    --vision-model gemma3:4b
+
+# Performance and processing options
+/home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py \
+    --chunk-size 1500 \
+    --chunk-overlap 300 \
+    --k-similar-chunks 3 \
+    --no-vision
+
+# Force rebuild database with verbose output
+/home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py \
+    --force-rebuild \
+    --verbose
+```
+
+### Programmatic Configuration (Advanced)
+
+You can also customize the system by modifying parameters in code:
+
 ```python
-rag_system = ImprovedPDFRAG(
+rag_system = PDFRAG(
     pdf_folder="datasets",                              # Change PDF location
-    ollama_model="gemma3:4b-it-qat",                   # Change Ollama model for generation
+    ollama_model="gemma3:4b",                          # Change Ollama model for generation
     embedding_model="google/embeddinggemma-300m",      # Change embedding model  
-    persist_directory="./chroma_db_improved"           # Change database location
+    persist_directory="./chroma_db"                    # Change database location
 )
 ```
 
@@ -182,16 +321,29 @@ HUGGINGFACE_HUB_TOKEN=your_hf_token_here
 
 ## Key Classes and Functions
 
-### `ImprovedPDFRAG` Class
+### Main Components
+
+**`input_arguments.py`** - Command-line interface module:
+- `parse_arguments()` - Parses and validates all command-line arguments
+- Organized argument groups: Model Configuration, Processing Configuration, Text Chunking, Vision Processing, General Options
+- Built-in validation for parameter combinations and value ranges
+- Automatic logging level configuration based on verbosity flags
+
+**`ask_rag.py`** - Main application module:
+
+### `PDFRAG` Class
 
 Main RAG system using EmbeddingGemma for embeddings and Ollama for generation:
 
-- `load_pdfs()` - Extracts text from PDF files using pypdf
-- `chunk_documents()` - Splits text into manageable chunks with overlap
+- `__init__()` - Initializes system with configurable parameters for models, chunking, vision processing
+- `load_pdfs()` - Enhanced PDF extraction with text, tables, and image analysis
+- `chunk_documents()` - Splits text into configurable chunks with overlap
 - `setup_embeddings_and_llm()` - Initializes EmbeddingGemma + Ollama components
 - `create_vectorstore()` - Creates ChromaDB vector database with embeddings
-- `setup_qa_chain()` - Sets up retrieval-augmented question-answering pipeline
+- `setup_qa_chain()` - Sets up retrieval-augmented question-answering pipeline  
 - `query()` - Processes questions and returns answers with source attribution
+- `_extract_and_analyze_images()` - Vision processing for PDF images
+- `_format_table_as_text()` - Table extraction and formatting
 
 ### `EmbeddingGemmaEmbeddings` Class
 
@@ -222,12 +374,20 @@ Custom embeddings implementation with task-specific prompts:
 3. **"Model not found"**
    ```bash
    # Install recommended model
-   ollama pull gemma3:4b-it-qat
+   ollama pull gemma3:4b
+   
+   # Or specify a different model via command line
+   /home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py --ollama-model llama3.2
    ```
 
 4. **"No PDFs found"**
+   ```bash
+   # Default location
    - Make sure PDF files are in the `datasets/` folder
-   - Check file permissions and formats
+   
+   # Custom location via command line
+   /home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py --pdf-folder ./my-papers
+   ```
 
 5. **"Import errors"**
    ```bash
@@ -240,18 +400,41 @@ Custom embeddings implementation with task-specific prompts:
    - Accept Google's usage license
    - Re-run the authentication setup
 
+7. **"Vision processing failures"**
+   ```bash
+   # Disable vision for faster processing
+   /home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py --no-vision
+   
+   # Adjust vision timeout settings
+   /home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py --vision-timeout 30
+   ```
+
+8. **"Memory issues"**
+   ```bash
+   # Use smaller models and chunks
+   /home/yannik/workspace/ucla/llm-rag/.venv/bin/python ask_rag.py \
+       --ollama-model gemma3:1b \
+       --chunk-size 800 \
+       --no-vision
+   ```
+
 ### Performance Tips
 
 - **First run setup**: Downloads EmbeddingGemma (~600MB) and builds vector database
 - **Subsequent runs**: Much faster as they reuse cached models and stored embeddings
-- **Model selection**: `gemma3:4b-it-qat` provides good balance of speed and quality
+- **Model selection**: Configure via `--ollama-model` - `gemma3:4b` provides good balance of speed and quality
+- **Speed optimization**: Use `--no-vision` to disable image processing for faster operation
+- **Memory optimization**: Use `--ollama-model gemma3:1b` and `--chunk-size 800` for lower memory usage
 - **Embedding quality**: EmbeddingGemma provides superior embeddings vs general-purpose LLMs
 - **Memory usage**: System uses about 1-2GB RAM for embeddings + Ollama model size
 - **Storage**: Vector database grows with document collection size
+- **Force rebuild**: Use `--force-rebuild` when changing embedding models or chunk parameters
+- **Chunking optimization**: Larger `--chunk-size` for longer documents, adjust `--chunk-overlap` accordingly
 
 ## Dependencies
 
 Key libraries used:
+- `argparse` - Command-line argument parsing (built-in Python module)
 - `pypdf` - PDF text extraction (fallback)
 - `pdfplumber` - Enhanced PDF processing with table extraction
 - `pymupdf` (fitz) - Image extraction from PDFs
@@ -264,6 +447,10 @@ Key libraries used:
 - `sentence-transformers` - EmbeddingGemma model integration
 - `transformers` & `torch` - HuggingFace model infrastructure
 - `huggingface-hub` - Authentication and model access
+
+### Modular Architecture
+- `input_arguments.py` - Centralized command-line interface with comprehensive argument validation
+- `ask_rag.py` - Main application logic with configurable components
 
 ## Authentication Details
 
@@ -291,12 +478,16 @@ echo "HUGGINGFACE_HUB_TOKEN=your_token_here" > .env
 
 To extend this system, you could:
 
-1. Add support for more file types (DOCX, TXT, HTML, etc.)
-2. Implement more sophisticated chunking strategies
-3. Add a web interface using Streamlit or FastAPI  
-4. Implement conversation memory for multi-turn dialogues
-5. Add support for multiple embedding models
-6. Integrate with cloud vector databases
+1. **File format support**: Add support for more file types (DOCX, TXT, HTML, etc.)
+2. **Advanced chunking**: Implement semantic chunking or document-structure-aware splitting  
+3. **Web interface**: Add a web UI using Streamlit or FastAPI
+4. **Conversation memory**: Implement multi-turn dialogue capabilities
+5. **Model flexibility**: Add support for multiple embedding models simultaneously
+6. **Cloud integration**: Integrate with cloud vector databases (Pinecone, Weaviate, etc.)
+7. **Configuration management**: Extend `input_arguments.py` with config files (YAML/JSON)
+8. **API mode**: Add REST API endpoints for programmatic access
+9. **Batch processing**: Add batch document processing capabilities
+10. **Custom prompts**: Make prompt templates configurable via command line
 
 ## License
 
