@@ -1,4 +1,5 @@
 import argparse
+import logging
 
 def parse_arguments():
     """Parse command-line arguments for the RAG system."""
@@ -64,14 +65,14 @@ def parse_arguments():
     chunking_group.add_argument(
         "--chunk-size", 
         type=int, 
-        default=1000,
+        default=5_000,
         help="Maximum size of text chunks for embedding"
     )
     chunking_group.add_argument(
         "--chunk-overlap", 
         type=int, 
-        default=200,
-        help="Overlap between consecutive text chunks"
+        default=1000,
+        help="Overlap between consecutive text chunks (typically 20%% of chunk_size)"
     )
     
     # Vision processing arguments

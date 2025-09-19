@@ -103,14 +103,38 @@ class EmbeddingGemmaEmbeddings(Embeddings):
         According to EmbeddingGemma documentation, document embeddings should use:
         "title: {title | 'none'} | text: {content}"
         
+        This enhanced version extracts title information from document content.
+        
         Args:
-            texts (List[str]): List of document texts to embed
+            texts (List[str]): List of document texts to embed (may include title context)
             
         Returns:
             List[List[float]]: List of embedding vectors
         """
-        # Format texts with document prompt
-        formatted_texts = [f"title: none | text: {text}" for text in texts]
+        formatted_texts = []
+        
+        for text in texts:
+            # Extract title from enhanced content format: [Document: title]
+            title = "none"
+            content = text
+            
+            # Check if text starts with document title marker
+            if text.startswith("[Document: ") and "]\n\n" in text:
+                try:
+                    # Extract title between [Document: and ]
+                    title_end = text.find("]\n\n")
+                    title = text[11:title_end]  # Skip "[Document: "
+                    content = text[title_end + 3:]  # Skip "]\n\n"
+                    
+                    logger.debug(f"Extracted title: '{title}' for embedding")
+                except Exception as e:
+                    logger.warning(f"Failed to extract title from content: {e}")
+                    # Fallback to original content
+                    pass
+            
+            # Format with EmbeddingGemma prompt template
+            formatted_text = f"title: {title} | text: {content}"
+            formatted_texts.append(formatted_text)
         
         # Generate embeddings
         embeddings = self.model.encode(formatted_texts, convert_to_tensor=False)
@@ -156,8 +180,8 @@ class PDFRAG:
                  k_similar_chunks: int = 2,
                  enable_vision: bool = True,
                  vision_model: str = "gemma3:4b",
-                 chunk_size: int = 1000,
-                 chunk_overlap: int = 200,
+                 chunk_size: int = 5000,
+                 chunk_overlap: int = 1000,
                  min_image_width: int = 50,
                  min_image_height: int = 50,
                  vision_timeout: int = 15,
@@ -204,7 +228,8 @@ class PDFRAG:
         logger.info(f"🤖 Ollama model: {ollama_model}")
         logger.info(f"🧠 Embedding model: {embedding_model}")
         logger.info(f"💾 Persist directory: {persist_directory}")
-        logger.info(f"🔍 Chunking: {chunk_size} chars (overlap: {chunk_overlap})")
+        logger.info(f"🔍 Chunking: {chunk_size} chars (overlap: {chunk_overlap}) - optimized for academic papers")
+        logger.info("📝 Enhanced chunking includes filename context in embeddings")
         
         # Vision processing settings
         self.vision_model = vision_model
@@ -685,15 +710,15 @@ class PDFRAG:
         """
         Split documents into smaller chunks for better retrieval.
         
-        Uses the same chunking strategy as the original system.
+        Enhanced chunking that includes filename information for better embeddings.
         
         Args:
             documents (List[Document]): List of documents to chunk
             
         Returns:
-            List[Document]: List of chunked documents
+            List[Document]: List of chunked documents with enhanced metadata
         """
-        logger.info("✂️ Chunking documents for optimal retrieval")
+        logger.info("✂️ Chunking documents for optimal retrieval with filename context")
         
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=self.chunk_size,
@@ -702,9 +727,31 @@ class PDFRAG:
             separators=["\n\n", "\n", " ", ""]
         )
         
-        chunked_docs = text_splitter.split_documents(documents)
+        chunked_docs = []
+        
+        for document in documents:
+            # Extract filename for title (remove extension and path)
+            filename = document.metadata.get("filename", "Unknown")
+            title = Path(filename).stem if filename != "Unknown" else "Unknown Document"
+            
+            # Split the document into chunks
+            doc_chunks = text_splitter.split_documents([document])
+            
+            # Enhance each chunk with filename context for embeddings
+            for chunk in doc_chunks:
+                # Store the title information that will be used in embeddings
+                chunk.metadata["title"] = title
+                chunk.metadata["filename_for_embedding"] = title
+                
+                # Optionally prepend filename context to content for better embeddings
+                # This helps the embedding model understand document context
+                enhanced_content = f"[Document: {title}]\n\n{chunk.page_content}"
+                chunk.page_content = enhanced_content
+                
+                chunked_docs.append(chunk)
         
         logger.info(f"📦 Created {len(chunked_docs)} chunks from {len(documents)} documents")
+        logger.info("📝 Enhanced chunks with filename context for better embeddings")
         return chunked_docs
     
     def setup_embeddings_and_llm(self):
@@ -896,8 +943,9 @@ Answer:"""
                 # Extract image references
                 image_references = self._extract_image_references(doc.page_content)
                 
-                # Create content preview (remove page and image markers for cleaner display)
+                # Create content preview (remove page, image, and document markers for cleaner display)
                 content_for_preview = doc.page_content
+                content_for_preview = re.sub(r'\[Document: [^\]]+\]\n\n', '', content_for_preview)  # Remove document title
                 content_for_preview = re.sub(r'\n--- Page \d+ ---\n', ' ', content_for_preview)
                 content_for_preview = re.sub(r'\[IMAGE \d+ on Page \d+\]\nDescription: ', 'Image: ', content_for_preview)
                 content_preview = content_for_preview[:200].strip()
