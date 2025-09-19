@@ -19,9 +19,10 @@ try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    pass  # dotenv not installed, continue without it
+    pass  
 
 import pypdf
+import pdfplumber
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaLLM
 from langchain_chroma import Chroma
@@ -140,11 +141,13 @@ class ImprovedPDFRAG:
     - Better performance and resource usage
     """
     
-    def __init__(self, pdf_folder: str = "datasets", 
+    def __init__(
+        self, pdf_folder: str = "datasets", 
                  ollama_model: str = "gemma3:1b",
                  embedding_model: str = "google/embeddinggemma-300m",
                  persist_directory: str = "./chroma_db",
-                 k_similar_chunks: int = 2):
+                 k_similar_chunks: int = 2
+        ):
         """
         Initialize the RAG system.
         
@@ -172,16 +175,71 @@ class ImprovedPDFRAG:
         logger.info(f"🧠 Embedding model: {embedding_model}")
         logger.info(f"💾 Persist directory: {persist_directory}")
     
+    def _format_table_as_text(self, table: List[List[str]], table_index: int) -> str:
+        """
+        Format a table extracted by pdfplumber as readable text for RAG processing.
+        
+        Args:
+            table (List[List[str]]): Table data from pdfplumber
+            table_index (int): Index of the table on the page
+            
+        Returns:
+            str: Formatted table text
+        """
+        if not table or not any(table):
+            return ""
+        
+        try:
+            # Filter out None values and convert to strings
+            cleaned_table = []
+            for row in table:
+                cleaned_row = [str(cell).strip() if cell is not None else "" for cell in row]
+                if any(cleaned_row):  # Skip completely empty rows
+                    cleaned_table.append(cleaned_row)
+            
+            if not cleaned_table:
+                return ""
+            
+            # Calculate column widths for formatting
+            max_widths = []
+            for col_idx in range(len(cleaned_table[0])):
+                max_width = max(len(row[col_idx]) if col_idx < len(row) else 0 
+                               for row in cleaned_table)
+                max_widths.append(min(max_width, 30))  # Cap at 30 chars per column
+            
+            # Format table with proper spacing
+            formatted_lines = [f"\n[TABLE {table_index}]"]
+            
+            for row_idx, row in enumerate(cleaned_table):
+                formatted_row = " | ".join(
+                    cell[:max_widths[col_idx]].ljust(max_widths[col_idx])
+                    for col_idx, cell in enumerate(row[:len(max_widths)])
+                )
+                formatted_lines.append(formatted_row)
+                
+                # Add separator line after header (first row)
+                if row_idx == 0:
+                    separator = "-+-".join("-" * width for width in max_widths)
+                    formatted_lines.append(separator)
+            
+            formatted_lines.append("")  # Empty line after table
+            return "\n".join(formatted_lines)
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Error formatting table {table_index}: {str(e)}")
+            return f"\n[TABLE {table_index}] - Error formatting table content\n"
+    
     def load_pdfs(self) -> List[Document]:
         """
-        Load all PDF files from the specified folder and extract text.
+        Load all PDF files from the specified folder and extract text and tables.
         
-        Same implementation as the original system.
+        Enhanced implementation that extracts both text and table data using pdfplumber,
+        with pypdf as fallback for text extraction.
         
         Returns:
-            List[Document]: List of documents with text and metadata
+            List[Document]: List of documents with text, tables, and metadata
         """
-        logger.info(f"📚 Loading PDFs from {self.pdf_folder}")
+        logger.info(f"📚 Loading PDFs with enhanced table extraction from {self.pdf_folder}")
         documents = []
         
         if not self.pdf_folder.exists():
@@ -194,34 +252,88 @@ class ImprovedPDFRAG:
         for pdf_file in pdf_files:
             try:
                 logger.info(f"🔄 Processing: {pdf_file.name}")
+                text_content = ""
+                tables_extracted = 0
+                total_pages = 0
                 
-                with open(pdf_file, 'rb') as file:
-                    pdf_reader = pypdf.PdfReader(file)
-                    text_content = ""
+                # Try enhanced extraction with pdfplumber first
+                try:
+                    with pdfplumber.open(pdf_file) as pdf:
+                        total_pages = len(pdf.pages)
+                        
+                        for page_num, page in enumerate(pdf.pages):
+                            page_content = f"\n--- Page {page_num + 1} ---\n"
+                            
+                            # Extract text
+                            page_text = page.extract_text()
+                            if page_text:
+                                page_content += page_text
+                            
+                            # Extract tables
+                            tables = page.extract_tables()
+                            if tables:
+                                logger.debug(f"📊 Found {len(tables)} tables on page {page_num + 1}")
+                                for table_idx, table in enumerate(tables):
+                                    if table:  # Skip empty tables
+                                        table_text = self._format_table_as_text(table, table_idx + 1)
+                                        if table_text.strip():
+                                            page_content += table_text
+                                            tables_extracted += 1
+                            
+                            text_content += page_content
+                            
+                    logger.info(f"✅ Enhanced extraction successful: {pdf_file.name} "
+                              f"({total_pages} pages, {tables_extracted} tables)")
+                
+                except Exception as pdfplumber_error:
+                    logger.warning(f"⚠️ pdfplumber failed for {pdf_file.name}: {pdfplumber_error}")
+                    logger.info(f"🔄 Falling back to pypdf for {pdf_file.name}")
                     
-                    for page_num, page in enumerate(pdf_reader.pages):
-                        page_text = page.extract_text()
-                        if page_text:
-                            text_content += f"\n--- Page {page_num + 1} ---\n{page_text}"
+                    # Fallback to pypdf for basic text extraction
+                    try:
+                        with open(pdf_file, 'rb') as file:
+                            pdf_reader = pypdf.PdfReader(file)
+                            total_pages = len(pdf_reader.pages)
+                            
+                            for page_num, page in enumerate(pdf_reader.pages):
+                                page_text = page.extract_text()
+                                if page_text:
+                                    text_content += f"\n--- Page {page_num + 1} ---\n{page_text}"
+                        
+                        logger.info(f"✅ Fallback extraction successful: {pdf_file.name} ({total_pages} pages)")
+                    
+                    except Exception as pypdf_error:
+                        logger.error(f"❌ Both extraction methods failed for {pdf_file.name}: {pypdf_error}")
+                        continue
                 
+                # Create document if we have content
                 if text_content.strip():
                     doc = Document(
                         page_content=text_content,
                         metadata={
                             "source": str(pdf_file),
                             "filename": pdf_file.name,
-                            "total_pages": len(pdf_reader.pages)
+                            "total_pages": total_pages,
+                            "tables_extracted": tables_extracted,
+                            "enhanced_extraction": tables_extracted > 0
                         }
                     )
                     documents.append(doc)
-                    logger.info(f"✅ Loaded {pdf_file.name} ({len(pdf_reader.pages)} pages)")
+                    
+                    extraction_type = "enhanced" if tables_extracted > 0 else "basic"
+                    logger.info(f"📄 Loaded {pdf_file.name} ({extraction_type}, "
+                              f"{total_pages} pages, {tables_extracted} tables)")
                 else:
-                    logger.warning(f"⚠️ No text content found in {pdf_file.name}")
+                    logger.warning(f"⚠️ No content extracted from {pdf_file.name}")
                     
             except Exception as e:
                 logger.error(f"❌ Error processing {pdf_file.name}: {str(e)}")
         
-        logger.info(f"🎉 Successfully loaded {len(documents)} documents")
+        total_tables = sum(doc.metadata.get("tables_extracted", 0) for doc in documents)
+        enhanced_docs = sum(1 for doc in documents if doc.metadata.get("enhanced_extraction", False))
+        
+        logger.info(f"🎉 Successfully loaded {len(documents)} documents "
+                   f"({enhanced_docs} with tables, {total_tables} tables total)")
         return documents
     
     def chunk_documents(self, documents: List[Document]) -> List[Document]:
@@ -449,8 +561,8 @@ def main():
     """
     Main function demonstrating the RAG system.
     """
-    print("🧠 PDF RAG System")
-    print("🤝 EmbeddingGemma-300M + Ollama")
+    print("🧠 Enhanced PDF RAG System")
+    print("🤝 EmbeddingGemma-300M + Ollama + Table Extraction")
     print("=" * 60)
     
     try:

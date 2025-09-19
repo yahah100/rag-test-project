@@ -15,6 +15,7 @@ dependencies = [
     "matplotlib",
     "seaborn",
     "pypdf",
+    "pdfplumber",
     "ollama",
     "chromadb",
     "sentence-transformers",

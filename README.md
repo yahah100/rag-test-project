@@ -12,7 +12,8 @@ A high-performance RAG (Retrieval-Augmented Generation) system that uses Google'
 
 ## Features
 
-- 📚 **PDF Processing**: Loads and extracts text from PDF files
+- 📚 **Enhanced PDF Processing**: Loads and extracts text and tables from PDF files
+- 📊 **Table Extraction**: Preserves table structure and data using pdfplumber
 - 🧠 **Smart Chunking**: Breaks documents into optimal chunks for retrieval
 - 🤖 **Ollama Integration**: Uses local Ollama models for embeddings and generation
 - 💾 **Vector Storage**: Stores embeddings in ChromaDB for fast retrieval
@@ -77,7 +78,7 @@ The RAG system uses a hybrid approach for optimal performance:
 ### System Architecture (EmbeddingGemma + Ollama)
 
 1. **Document Loading**: Reads PDF files from the `datasets/` folder
-2. **Text Extraction**: Extracts text content from each PDF page  
+2. **Enhanced Extraction**: Extracts text content and table data from each PDF page using pdfplumber
 3. **Smart Chunking**: Splits documents into 1000-character chunks with 200-character overlap
 4. **Embedding Generation**: Uses **EmbeddingGemma-300M** with task-specific prompts:
    - Documents: `"title: none | text: {content}"`
@@ -221,7 +222,8 @@ Custom embeddings implementation with task-specific prompts:
 ## Dependencies
 
 Key libraries used:
-- `pypdf` - PDF text extraction and processing
+- `pypdf` - PDF text extraction (fallback)
+- `pdfplumber` - Enhanced PDF processing with table extraction
 - `langchain` - LLM framework and document processing pipeline
 - `langchain-ollama` - Ollama integration for text generation
 - `langchain-chroma` - ChromaDB vector store integration
