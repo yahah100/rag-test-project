@@ -142,10 +142,12 @@ class EmbeddingGemmaEmbeddings(Embeddings):
     
     def embed_query(self, text: str) -> List[float]:
         """
-        Embed a single query using the query-specific prompt format.
+        Enhanced query embedding with table-awareness.
         
         According to EmbeddingGemma documentation, query embeddings should use:
         "task: search result | query: {content}"
+        
+        This enhanced version detects table-related queries for better retrieval.
         
         Args:
             text (str): Query text to embed
@@ -153,12 +155,63 @@ class EmbeddingGemmaEmbeddings(Embeddings):
         Returns:
             List[float]: Embedding vector
         """
+        # Detect if query is table-related and enhance accordingly
+        enhanced_query = self._enhance_query_for_tables(text)
+        
         # Format text with query prompt
-        formatted_text = f"task: search result | query: {text}"
+        formatted_text = f"task: search result | query: {enhanced_query}"
         
         # Generate embedding
         embedding = self.model.encode([formatted_text], convert_to_tensor=False)
         return embedding[0].tolist()
+    
+    def _enhance_query_for_tables(self, query: str) -> str:
+        """
+        Enhance query text to improve table retrieval if query appears table-related.
+        
+        Args:
+            query (str): Original query text
+            
+        Returns:
+            str: Enhanced query text
+        """
+        query_lower = query.lower()
+        
+        # Table-related keywords
+        table_indicators = [
+            'table', 'chart', 'data', 'results', 'statistics', 'numbers', 'values', 
+            'comparison', 'performance', 'metrics', 'scores', 'list', 'summary',
+            'figure', 'row', 'column', 'header', 'cell', 'percentage', 'rate',
+            'count', 'total', 'average', 'mean', 'distribution', 'breakdown'
+        ]
+        
+        # Question words that often precede table queries
+        table_question_patterns = [
+            'what are the', 'how many', 'which', 'what is the', 'compare',
+            'show me', 'find', 'list', 'what were the', 'how much'
+        ]
+        
+        is_table_query = any(indicator in query_lower for indicator in table_indicators)
+        has_table_pattern = any(pattern in query_lower for pattern in table_question_patterns)
+        
+        if is_table_query or has_table_pattern:
+            # Add table-specific context to improve retrieval
+            enhanced_parts = []
+            
+            if is_table_query:
+                enhanced_parts.append("table data")
+            if 'compar' in query_lower:
+                enhanced_parts.append("comparison")
+            if any(word in query_lower for word in ['result', 'performance', 'score']):
+                enhanced_parts.append("results")
+            if any(word in query_lower for word in ['number', 'count', 'total', 'percentage']):
+                enhanced_parts.append("numerical data")
+            
+            if enhanced_parts:
+                context = " ".join(enhanced_parts)
+                return f"{query} {context}"
+        
+        return query
 
 
 class PDFRAG:
@@ -328,19 +381,20 @@ class PDFRAG:
         
         return image_refs
     
-    def _format_table_as_text(self, table: List[List[str]], table_index: int) -> str:
+    def _format_table_as_text(self, table: List[List[str]], table_index: int, page_num: int = None) -> Dict[str, Any]:
         """
-        Format a table extracted by pdfplumber as readable text for RAG processing.
+        Enhanced table formatting for better RAG processing with semantic understanding.
         
         Args:
             table (List[List[str]]): Table data from pdfplumber
             table_index (int): Index of the table on the page
+            page_num (int): Page number for context
             
         Returns:
-            str: Formatted table text
+            Dict[str, Any]: Dictionary containing formatted text, metadata, and structure info
         """
         if not table or not any(table):
-            return ""
+            return {"text": "", "metadata": {}, "structure": {}}
         
         try:
             # Filter out None values and convert to strings
@@ -351,36 +405,214 @@ class PDFRAG:
                     cleaned_table.append(cleaned_row)
             
             if not cleaned_table:
-                return ""
+                return {"text": "", "metadata": {}, "structure": {}}
             
-            # Calculate column widths for formatting
-            max_widths = []
-            for col_idx in range(len(cleaned_table[0])):
-                max_width = max(len(row[col_idx]) if col_idx < len(row) else 0 
-                               for row in cleaned_table)
-                max_widths.append(min(max_width, 30))  # Cap at 30 chars per column
+            # Extract table structure information
+            num_rows = len(cleaned_table)
+            num_cols = len(cleaned_table[0]) if cleaned_table else 0
             
-            # Format table with proper spacing
-            formatted_lines = [f"\n[TABLE {table_index}]"]
+            # Identify headers (first row) and their content
+            headers = cleaned_table[0] if cleaned_table else []
+            data_rows = cleaned_table[1:] if len(cleaned_table) > 1 else []
             
-            for row_idx, row in enumerate(cleaned_table):
-                formatted_row = " | ".join(
-                    cell[:max_widths[col_idx]].ljust(max_widths[col_idx])
-                    for col_idx, cell in enumerate(row[:len(max_widths)])
-                )
-                formatted_lines.append(formatted_row)
+            # Create multiple formatted representations for better embedding
+            
+            # 1. Structured format (primary) - preserves full content
+            structured_lines = [f"\n[TABLE {table_index}" + (f" on Page {page_num}" if page_num else "") + "]"]
+            structured_lines.append(f"Table Structure: {num_rows} rows × {num_cols} columns")
+            
+            if headers:
+                structured_lines.append("\nColumn Headers:")
+                for i, header in enumerate(headers):
+                    structured_lines.append(f"  Column {i+1}: {header}")
                 
-                # Add separator line after header (first row)
-                if row_idx == 0:
-                    separator = "-+-".join("-" * width for width in max_widths)
-                    formatted_lines.append(separator)
+                structured_lines.append("\nTable Data:")
+                
+                # Format each row with column names for better semantic understanding
+                for row_idx, row in enumerate(data_rows):
+                    structured_lines.append(f"  Row {row_idx + 1}:")
+                    for col_idx, (header, cell) in enumerate(zip(headers, row)):
+                        if cell.strip():  # Only include non-empty cells
+                            structured_lines.append(f"    {header}: {cell}")
+                
+                # 2. Natural language description format
+                structured_lines.append("\nTable Summary:")
+                if num_rows <= 2:
+                    structured_lines.append(f"Small table with headers: {', '.join(headers)}")
+                else:
+                    structured_lines.append(f"Table containing {num_rows-1} data rows with columns: {', '.join(headers)}")
+                
+                # Add key-value relationships for better searchability
+                structured_lines.append("\nSearchable Content:")
+                for row in data_rows:
+                    row_content = []
+                    for header, cell in zip(headers, row):
+                        if cell.strip():
+                            row_content.append(f"{header} is {cell}")
+                    if row_content:
+                        structured_lines.append("  " + "; ".join(row_content))
+            else:
+                # Handle table without clear headers
+                structured_lines.append("\nTable Content (no clear headers):")
+                for row_idx, row in enumerate(cleaned_table):
+                    row_text = " | ".join(cell for cell in row if cell.strip())
+                    if row_text:
+                        structured_lines.append(f"  Row {row_idx + 1}: {row_text}")
             
-            formatted_lines.append("")  # Empty line after table
-            return "\n".join(formatted_lines)
+            structured_lines.append("")  # Empty line after table
+            
+            # 3. Create metadata for advanced retrieval
+            table_metadata = {
+                "table_index": table_index,
+                "page_number": page_num,
+                "dimensions": {"rows": num_rows, "columns": num_cols},
+                "has_headers": bool(headers),
+                "headers": headers,
+                "data_types": self._analyze_table_data_types(data_rows),
+                "table_type": self._classify_table_type(headers, data_rows),
+                "key_terms": self._extract_table_key_terms(headers, data_rows)
+            }
+            
+            # 4. Create structure info for chunking decisions
+            table_structure = {
+                "is_large": num_rows > 10 or num_cols > 5,
+                "is_complex": self._is_complex_table(headers, data_rows),
+                "should_keep_together": num_rows <= 20,  # Keep smaller tables together
+                "estimated_tokens": self._estimate_table_tokens(cleaned_table)
+            }
+            
+            return {
+                "text": "\n".join(structured_lines),
+                "metadata": table_metadata,
+                "structure": table_structure,
+                "raw_data": cleaned_table
+            }
             
         except Exception as e:
             logger.warning(f"⚠️ Error formatting table {table_index}: {str(e)}")
-            return f"\n[TABLE {table_index}] - Error formatting table content\n"
+            return {
+                "text": f"\n[TABLE {table_index}] - Error formatting table content\n",
+                "metadata": {"error": str(e)},
+                "structure": {"has_error": True}
+            }
+    
+    def _analyze_table_data_types(self, data_rows: List[List[str]]) -> Dict[str, str]:
+        """Analyze the data types in table columns for better understanding."""
+        if not data_rows:
+            return {}
+        
+        data_types = {}
+        num_cols = len(data_rows[0]) if data_rows else 0
+        
+        for col_idx in range(num_cols):
+            col_values = [row[col_idx] for row in data_rows if col_idx < len(row) and row[col_idx].strip()]
+            
+            if not col_values:
+                data_types[f"column_{col_idx}"] = "empty"
+                continue
+            
+            # Simple heuristic for data type detection
+            numeric_count = sum(1 for val in col_values if self._is_numeric(val))
+            date_count = sum(1 for val in col_values if self._looks_like_date(val))
+            
+            if numeric_count > len(col_values) * 0.7:
+                data_types[f"column_{col_idx}"] = "numeric"
+            elif date_count > len(col_values) * 0.5:
+                data_types[f"column_{col_idx}"] = "date"
+            else:
+                data_types[f"column_{col_idx}"] = "text"
+        
+        return data_types
+    
+    def _classify_table_type(self, headers: List[str], data_rows: List[List[str]]) -> str:
+        """Classify the type of table for better context."""
+        if not headers:
+            return "unstructured"
+        
+        header_text = " ".join(headers).lower()
+        
+        # Common table patterns
+        if any(word in header_text for word in ["result", "score", "performance", "metric"]):
+            return "results"
+        elif any(word in header_text for word in ["name", "description", "definition"]):
+            return "definitions"
+        elif any(word in header_text for word in ["date", "time", "year", "month"]):
+            return "temporal"
+        elif any(word in header_text for word in ["price", "cost", "amount", "$", "€", "£"]):
+            return "financial"
+        elif any(word in header_text for word in ["count", "number", "quantity", "total"]):
+            return "statistical"
+        else:
+            return "general"
+    
+    def _extract_table_key_terms(self, headers: List[str], data_rows: List[List[str]]) -> List[str]:
+        """Extract key terms from table for better searchability."""
+        key_terms = set()
+        
+        # Add headers as key terms
+        for header in headers:
+            key_terms.update(header.lower().split())
+        
+        # Add frequent terms from data (limit to avoid noise)
+        term_counts = {}
+        for row in data_rows:
+            for cell in row:
+                words = cell.lower().split()
+                for word in words:
+                    if len(word) > 2 and word.isalpha():  # Only meaningful words
+                        term_counts[word] = term_counts.get(word, 0) + 1
+        
+        # Add top frequent terms
+        frequent_terms = [term for term, count in sorted(term_counts.items(), key=lambda x: x[1], reverse=True)[:10]]
+        key_terms.update(frequent_terms)
+        
+        return list(key_terms)
+    
+    def _is_complex_table(self, headers: List[str], data_rows: List[List[str]]) -> bool:
+        """Determine if table has complex structure requiring special handling."""
+        if not headers or not data_rows:
+            return False
+        
+        # Complex if many columns or irregular structure
+        num_cols = len(headers)
+        if num_cols > 6:
+            return True
+        
+        # Check for irregular row lengths
+        irregular_rows = sum(1 for row in data_rows if len(row) != num_cols)
+        if irregular_rows > len(data_rows) * 0.3:
+            return True
+        
+        # Check for nested headers or multi-line cells
+        for header in headers:
+            if '\n' in header or len(header) > 50:
+                return True
+        
+        return False
+    
+    def _estimate_table_tokens(self, table: List[List[str]]) -> int:
+        """Estimate token count for table content."""
+        total_chars = sum(len(cell) for row in table for cell in row)
+        return total_chars // 4  # Rough estimate of tokens
+    
+    def _is_numeric(self, value: str) -> bool:
+        """Check if a string represents a numeric value."""
+        try:
+            float(value.replace(',', '').replace('$', '').replace('%', ''))
+            return True
+        except ValueError:
+            return False
+    
+    def _looks_like_date(self, value: str) -> bool:
+        """Check if a string looks like a date."""
+        import re
+        date_patterns = [
+            r'\d{1,2}[-/]\d{1,2}[-/]\d{2,4}',  # MM/DD/YYYY, MM-DD-YY, etc.
+            r'\d{4}[-/]\d{1,2}[-/]\d{1,2}',    # YYYY-MM-DD
+            r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)',  # Month names
+            r'\d{4}',  # Just year
+        ]
+        return any(re.search(pattern, value, re.IGNORECASE) for pattern in date_patterns)
     
     def _analyze_image_with_vision_model(self, image_base64: str, page_num: int, img_index: int) -> str:
         """
@@ -596,6 +828,7 @@ class PDFRAG:
                 tables_extracted = 0
                 images_extracted = 0
                 total_pages = 0
+                table_metadata_list = []  # Store table metadata for enhanced retrieval
                 
                 # Try enhanced extraction with pdfplumber + PyMuPDF first
                 try:
@@ -612,16 +845,19 @@ class PDFRAG:
                             if page_text:
                                 page_content += page_text
                             
-                            # Extract tables
+                            # Extract tables with enhanced processing
                             tables = page.extract_tables()
                             if tables:
                                 logger.debug(f"📊 Found {len(tables)} tables on page {page_num + 1}")
                                 for table_idx, table in enumerate(tables):
                                     if table:  # Skip empty tables
-                                        table_text = self._format_table_as_text(table, table_idx + 1)
-                                        if table_text.strip():
-                                            page_content += table_text
+                                        table_result = self._format_table_as_text(table, table_idx + 1, page_num + 1)
+                                        if table_result["text"].strip():
+                                            page_content += table_result["text"]
                                             tables_extracted += 1
+                                            
+                                            # Store table metadata for enhanced retrieval
+                                            table_metadata_list.append(table_result["metadata"])
                             
                             # Extract and analyze images
                             if fitz_doc and self.process_images:
@@ -671,7 +907,9 @@ class PDFRAG:
                             "tables_extracted": tables_extracted,
                             "images_extracted": images_extracted,
                             "enhanced_extraction": tables_extracted > 0 or images_extracted > 0,
-                            "vision_enabled": self.process_images and images_extracted > 0
+                            "vision_enabled": self.process_images and images_extracted > 0,
+                            "table_metadata": table_metadata_list,  # Enhanced table information
+                            "has_structured_data": len(table_metadata_list) > 0
                         }
                     )
                     documents.append(doc)
@@ -708,9 +946,13 @@ class PDFRAG:
     
     def chunk_documents(self, documents: List[Document]) -> List[Document]:
         """
-        Split documents into smaller chunks for better retrieval.
+        Enhanced chunking with table-aware splitting to preserve table structure.
         
-        Enhanced chunking that includes filename information for better embeddings.
+        This method:
+        - Identifies tables in document content
+        - Keeps small tables together in single chunks
+        - Handles large tables by creating dedicated chunks
+        - Preserves table context and metadata
         
         Args:
             documents (List[Document]): List of documents to chunk
@@ -718,14 +960,7 @@ class PDFRAG:
         Returns:
             List[Document]: List of chunked documents with enhanced metadata
         """
-        logger.info("✂️ Chunking documents for optimal retrieval with filename context")
-        
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap,
-            length_function=len,
-            separators=["\n\n", "\n", " ", ""]
-        )
+        logger.info("✂️ Enhanced chunking with table-aware processing")
         
         chunked_docs = []
         
@@ -733,15 +968,27 @@ class PDFRAG:
             # Extract filename for title (remove extension and path)
             filename = document.metadata.get("filename", "Unknown")
             title = Path(filename).stem if filename != "Unknown" else "Unknown Document"
+            table_metadata_list = document.metadata.get("table_metadata", [])
             
-            # Split the document into chunks
-            doc_chunks = text_splitter.split_documents([document])
+            # Use table-aware chunking strategy
+            doc_chunks = self._chunk_document_with_table_awareness(document, table_metadata_list)
             
             # Enhance each chunk with filename context for embeddings
-            for chunk in doc_chunks:
+            for chunk_idx, chunk in enumerate(doc_chunks):
                 # Store the title information that will be used in embeddings
                 chunk.metadata["title"] = title
                 chunk.metadata["filename_for_embedding"] = title
+                chunk.metadata["chunk_index"] = chunk_idx
+                
+                # Add table-specific metadata if this chunk contains tables
+                chunk_tables = self._identify_tables_in_chunk(chunk.page_content, table_metadata_list)
+                if chunk_tables:
+                    chunk.metadata["contains_tables"] = True
+                    chunk.metadata["table_info"] = chunk_tables
+                    chunk.metadata["chunk_type"] = "table_rich"
+                else:
+                    chunk.metadata["contains_tables"] = False
+                    chunk.metadata["chunk_type"] = "text"
                 
                 # Optionally prepend filename context to content for better embeddings
                 # This helps the embedding model understand document context
@@ -750,9 +997,233 @@ class PDFRAG:
                 
                 chunked_docs.append(chunk)
         
+        table_chunks = sum(1 for doc in chunked_docs if doc.metadata.get("contains_tables", False))
         logger.info(f"📦 Created {len(chunked_docs)} chunks from {len(documents)} documents")
+        logger.info(f"📊 {table_chunks} chunks contain table data with preserved structure")
         logger.info("📝 Enhanced chunks with filename context for better embeddings")
         return chunked_docs
+    
+    def _chunk_document_with_table_awareness(self, document: Document, table_metadata_list: List[Dict]) -> List[Document]:
+        """
+        Chunk a document while preserving table structure integrity.
+        
+        Args:
+            document (Document): Document to chunk
+            table_metadata_list (List[Dict]): List of table metadata
+            
+        Returns:
+            List[Document]: List of table-aware chunks
+        """
+        content = document.page_content
+        
+        # If no tables, use standard chunking
+        if not table_metadata_list:
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=self.chunk_size,
+                chunk_overlap=self.chunk_overlap,
+                length_function=len,
+                separators=["\n\n", "\n", " ", ""]
+            )
+            return text_splitter.split_documents([document])
+        
+        # Table-aware chunking
+        chunks = []
+        current_pos = 0
+        
+        # Find all table positions in the document
+        table_positions = []
+        for table_meta in table_metadata_list:
+            table_marker = f"[TABLE {table_meta.get('table_index', 0)}"
+            if table_meta.get('page_number'):
+                table_marker += f" on Page {table_meta['page_number']}"
+            table_marker += "]"
+            
+            start_pos = content.find(table_marker, current_pos)
+            if start_pos != -1:
+                # Find end of table
+                next_table_start = len(content)
+                for other_meta in table_metadata_list:
+                    other_marker = f"[TABLE {other_meta.get('table_index', 0)}"
+                    if other_meta.get('page_number'):
+                        other_marker += f" on Page {other_meta['page_number']}"
+                    other_marker += "]"
+                    
+                    other_pos = content.find(other_marker, start_pos + 1)
+                    if other_pos != -1 and other_pos < next_table_start:
+                        next_table_start = other_pos
+                
+                # Look for next page marker or image marker as potential end
+                next_page_pos = content.find("\n--- Page", start_pos + 1)
+                next_image_pos = content.find("\n[IMAGE", start_pos + 1)
+                
+                potential_ends = [pos for pos in [next_table_start, next_page_pos, next_image_pos] if pos > start_pos]
+                end_pos = min(potential_ends) if potential_ends else len(content)
+                
+                table_positions.append({
+                    'start': start_pos,
+                    'end': end_pos,
+                    'metadata': table_meta,
+                    'size': end_pos - start_pos
+                })
+        
+        # Sort table positions by start position
+        table_positions.sort(key=lambda x: x['start'])
+        
+        # Create chunks with table awareness
+        current_pos = 0
+        
+        for table_pos in table_positions:
+            # Add pre-table content if any
+            if current_pos < table_pos['start']:
+                pre_table_content = content[current_pos:table_pos['start']].strip()
+                if pre_table_content:
+                    # Use standard chunking for pre-table content
+                    text_splitter = RecursiveCharacterTextSplitter(
+                        chunk_size=self.chunk_size,
+                        chunk_overlap=self.chunk_overlap,
+                        length_function=len,
+                        separators=["\n\n", "\n", " ", ""]
+                    )
+                    temp_doc = Document(page_content=pre_table_content, metadata=document.metadata.copy())
+                    pre_chunks = text_splitter.split_documents([temp_doc])
+                    chunks.extend(pre_chunks)
+            
+            # Handle table content
+            table_content = content[table_pos['start']:table_pos['end']].strip()
+            if table_content:
+                # Decide whether to keep table in one chunk or split
+                table_size = table_pos['size']
+                
+                if table_size <= self.chunk_size * 1.5:  # Keep smaller tables together
+                    table_chunk = Document(
+                        page_content=table_content,
+                        metadata=document.metadata.copy()
+                    )
+                    chunks.append(table_chunk)
+                else:
+                    # Large table - split but try to keep logical sections together
+                    logger.info(f"📊 Large table detected ({table_size} chars), using careful splitting")
+                    text_splitter = RecursiveCharacterTextSplitter(
+                        chunk_size=self.chunk_size,
+                        chunk_overlap=self.chunk_overlap,
+                        length_function=len,
+                        separators=["\n\n", "\n", " ", ""]
+                    )
+                    temp_doc = Document(page_content=table_content, metadata=document.metadata.copy())
+                    table_chunks = text_splitter.split_documents([temp_doc])
+                    chunks.extend(table_chunks)
+            
+            current_pos = table_pos['end']
+        
+        # Add remaining content after last table
+        if current_pos < len(content):
+            remaining_content = content[current_pos:].strip()
+            if remaining_content:
+                text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=self.chunk_size,
+                    chunk_overlap=self.chunk_overlap,
+                    length_function=len,
+                    separators=["\n\n", "\n", " ", ""]
+                )
+                temp_doc = Document(page_content=remaining_content, metadata=document.metadata.copy())
+                final_chunks = text_splitter.split_documents([temp_doc])
+                chunks.extend(final_chunks)
+        
+        return chunks if chunks else [document]  # Fallback to original if something went wrong
+    
+    def _identify_tables_in_chunk(self, chunk_content: str, table_metadata_list: List[Dict]) -> List[Dict]:
+        """
+        Identify which tables are present in a given chunk.
+        
+        Args:
+            chunk_content (str): Content of the chunk
+            table_metadata_list (List[Dict]): List of all table metadata
+            
+        Returns:
+            List[Dict]: List of table metadata for tables in this chunk
+        """
+        chunk_tables = []
+        
+        for table_meta in table_metadata_list:
+            table_marker = f"[TABLE {table_meta.get('table_index', 0)}"
+            if table_meta.get('page_number'):
+                table_marker += f" on Page {table_meta['page_number']}"
+            table_marker += "]"
+            
+            if table_marker in chunk_content:
+                # Create a summary of table info for chunk metadata
+                table_summary = {
+                    "table_index": table_meta.get('table_index'),
+                    "page_number": table_meta.get('page_number'),
+                    "table_type": table_meta.get('table_type', 'general'),
+                    "headers": table_meta.get('headers', []),
+                    "dimensions": table_meta.get('dimensions', {}),
+                    "key_terms": table_meta.get('key_terms', [])[:5]  # Limit for metadata
+                }
+                chunk_tables.append(table_summary)
+        
+        return chunk_tables
+    
+    def _extract_table_references(self, content: str) -> List[str]:
+        """Extract table references from chunk content."""
+        import re
+        
+        # Find table markers like "[TABLE 1 on Page 3]"
+        table_pattern = r'\[TABLE (\d+)(?: on Page (\d+))?\]'
+        matches = re.findall(table_pattern, content)
+        
+        # Format as readable references
+        table_refs = []
+        for table_num, page_num in matches:
+            if page_num:
+                table_refs.append(f"Table {table_num} (p. {page_num})")
+            else:
+                table_refs.append(f"Table {table_num}")
+        
+        return table_refs
+    
+    def _create_table_aware_preview(self, content: str, table_info: List[Dict]) -> str:
+        """Create a preview that highlights table content and structure."""
+        if not table_info:
+            preview = content[:200].strip()
+            return preview + "..." if len(content) > 200 else preview
+        
+        # Create a structured preview for table-rich content
+        preview_parts = []
+        
+        for table_meta in table_info:
+            table_type = table_meta.get('table_type', 'general')
+            headers = table_meta.get('headers', [])
+            dimensions = table_meta.get('dimensions', {})
+            
+            table_desc = f"Table {table_meta.get('table_index', '')}" 
+            if table_meta.get('page_number'):
+                table_desc += f" (p. {table_meta['page_number']})"
+            
+            table_desc += f": {table_type} table"
+            
+            if dimensions:
+                rows = dimensions.get('rows', 0)
+                cols = dimensions.get('columns', 0)
+                table_desc += f" ({rows}×{cols})"
+            
+            if headers:
+                table_desc += f" - Headers: {', '.join(headers[:3])}"
+                if len(headers) > 3:
+                    table_desc += "..."
+            
+            preview_parts.append(table_desc)
+        
+        # Add some actual content
+        clean_content = re.sub(r'\[TABLE \d+[^\]]*\]', '', content)
+        clean_content = re.sub(r'Table Structure:[^\n]*\n', '', clean_content)
+        clean_content = re.sub(r'Column Headers:[^\n]*\n', '', clean_content)
+        content_sample = clean_content[:100].strip()
+        
+        if content_sample:
+            preview_parts.append(f"Content: {content_sample}...")
+        
+        return " | ".join(preview_parts)
     
     def setup_embeddings_and_llm(self):
         """
@@ -845,7 +1316,7 @@ class PDFRAG:
             search_kwargs={"k": self.k_similar_chunks}
         )
         
-        # Enhanced prompt template
+        # Enhanced prompt template with table awareness
         prompt_template = """You are a helpful research assistant that provides accurate answers based on the provided PDF documents.
 
 Use the following context from the documents to answer the question. Be precise and cite information when possible.
@@ -857,9 +1328,12 @@ Question: {question}
 
 Instructions:
 - Answer based only on the provided context
-- If the information isn't in the context, say "I don't have enough information in the provided documents"
+- If the information isn't in the context, say "I don't have enough information in the provided documents"  
 - Be specific and mention relevant details from the documents
 - If multiple documents discuss the topic, synthesize the information
+- When referencing table data, preserve the structure and relationships between data points
+- For numerical data from tables, include specific values and their context (headers, units, etc.)
+- If comparing data from tables, clearly indicate which values are being compared
 
 Answer:"""
         
@@ -934,7 +1408,7 @@ Answer:"""
                 "source_documents": []
             }
             
-            # Add source information with page numbers and image references
+            # Add enhanced source information with table, page, and image references
             for doc in result.get("source_documents", []):
                 # Extract page numbers from the document content
                 page_numbers = self._extract_page_numbers(doc.page_content)
@@ -943,14 +1417,23 @@ Answer:"""
                 # Extract image references
                 image_references = self._extract_image_references(doc.page_content)
                 
-                # Create content preview (remove page, image, and document markers for cleaner display)
+                # Extract table references and metadata
+                table_references = self._extract_table_references(doc.page_content)
+                table_info = doc.metadata.get("table_info", [])
+                
+                # Create content preview (remove markers for cleaner display)
                 content_for_preview = doc.page_content
                 content_for_preview = re.sub(r'\[Document: [^\]]+\]\n\n', '', content_for_preview)  # Remove document title
                 content_for_preview = re.sub(r'\n--- Page \d+ ---\n', ' ', content_for_preview)
                 content_for_preview = re.sub(r'\[IMAGE \d+ on Page \d+\]\nDescription: ', 'Image: ', content_for_preview)
-                content_preview = content_for_preview[:200].strip()
-                if len(content_for_preview) > 200:
-                    content_preview += "..."
+                
+                # For table content, provide more structured preview
+                if table_info:
+                    content_preview = self._create_table_aware_preview(content_for_preview, table_info)
+                else:
+                    content_preview = content_for_preview[:200].strip()
+                    if len(content_for_preview) > 200:
+                        content_preview += "..."
                 
                 source_info = {
                     "filename": doc.metadata.get("filename", "Unknown"),
@@ -958,6 +1441,10 @@ Answer:"""
                     "pages": page_numbers,
                     "image_references": image_references,
                     "has_images": len(image_references) > 0,
+                    "table_references": table_references,
+                    "table_info": table_info,
+                    "has_tables": len(table_references) > 0 or len(table_info) > 0,
+                    "chunk_type": doc.metadata.get("chunk_type", "text"),
                     "content_preview": content_preview
                 }
                 response["source_documents"].append(source_info)
@@ -1037,6 +1524,9 @@ def main():
                         page_ref = source.get('page_reference', '')
                         image_refs = source.get('image_references', [])
                         has_images = source.get('has_images', False)
+                        table_refs = source.get('table_references', [])
+                        has_tables = source.get('has_tables', False)
+                        chunk_type = source.get('chunk_type', 'text')
                         
                         # Build reference string
                         ref_parts = []
@@ -1044,6 +1534,8 @@ def main():
                             ref_parts.append(page_ref)
                         if image_refs:
                             ref_parts.append(f"{len(image_refs)} image{'s' if len(image_refs) > 1 else ''}")
+                        if table_refs:
+                            ref_parts.append(f"{len(table_refs)} table{'s' if len(table_refs) > 1 else ''}")
                         
                         if ref_parts:
                             ref_string = f" ({', '.join(ref_parts)})"
@@ -1051,9 +1543,17 @@ def main():
                         else:
                             print(f"  {i}. {filename}")
                         
+                        # Add table indicator if present
+                        if has_tables:
+                            print(f"     📊 Contains table data: {', '.join(table_refs)}")
+                        
                         # Add image indicator if present
                         if has_images:
                             print(f"     🖼️ Contains visual content: {', '.join(image_refs)}")
+                        
+                        # Add chunk type indicator for table-rich content
+                        if chunk_type == "table_rich":
+                            print(f"     📈 Table-rich content with structured data")
                         
                         print(f"     Preview: {source['content_preview']}")
                 
