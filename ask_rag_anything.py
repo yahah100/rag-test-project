@@ -99,6 +99,69 @@ async def ollama_embed(texts, model):
     
     return embeddings
 
+async def query_rag(rag, query, top_k=3):
+    # Interactive query loop
+    print("\nYou can now query the processed documents.")
+    print("Available query modes: hybrid, local, global, naive")
+    print("Type 'quit' or 'exit' to end the session.\n")
+    
+    while True:
+        try:
+            question = input("\nEnter your question: ").strip()
+            
+            if question.lower() in ['quit', 'exit', 'q']:
+                print("Goodbye!")
+                break
+            
+            if not question:
+                continue
+            
+            # Ask for query mode
+            mode = input("Query mode (hybrid/local/global/naive) [hybrid]: ").strip() or "hybrid"
+            
+            print(f"\nQuerying with mode '{mode}'...")
+            result = await rag.aquery(question, mode=mode)
+            
+            print("\n" + "=" * 80)
+            print("ANSWER:")
+            print("=" * 80)
+            print(result)
+            print("=" * 80)
+            
+        except KeyboardInterrupt:
+            print("\n\nGoodbye!")
+            break
+        except Exception as e:
+            print(f"Error during query: {e}")
+            traceback.print_exc()
+
+# Define LLM model function for Ollama
+async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
+    return await ollama_complete(
+        OLLAMA_LLM_MODEL,
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        **kwargs
+    )
+
+# Define vision model function for Ollama
+async def vision_model_func(prompt, system_prompt=None, history_messages=[], 
+                            image_data=None, messages=None, **kwargs):
+    # Use vision model if image data is present
+    if image_data or messages:
+        return await ollama_complete(
+            OLLAMA_VISION_MODEL,
+            prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages,
+            image_data=image_data,
+            messages=messages,
+            **kwargs
+        )
+    else:
+        # Fall back to regular LLM for text-only
+        return await llm_model_func(prompt, system_prompt, history_messages, **kwargs)
 
 async def main():
     """
@@ -134,34 +197,6 @@ async def main():
         enable_table_processing=True,
         enable_equation_processing=True,
     )
-    
-    # Define LLM model function for Ollama
-    async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
-        return await ollama_complete(
-            OLLAMA_LLM_MODEL,
-            prompt,
-            system_prompt=system_prompt,
-            history_messages=history_messages,
-            **kwargs
-        )
-    
-    # Define vision model function for Ollama
-    async def vision_model_func(prompt, system_prompt=None, history_messages=[], 
-                                image_data=None, messages=None, **kwargs):
-        # Use vision model if image data is present
-        if image_data or messages:
-            return await ollama_complete(
-                OLLAMA_VISION_MODEL,
-                prompt,
-                system_prompt=system_prompt,
-                history_messages=history_messages,
-                image_data=image_data,
-                messages=messages,
-                **kwargs
-            )
-        else:
-            # Fall back to regular LLM for text-only
-            return await llm_model_func(prompt, system_prompt, history_messages, **kwargs)
     
     # Define embedding function for Ollama
     # Get embedding dimension from the first embedding
@@ -258,41 +293,6 @@ async def main():
         print("\n⚠️  No files were successfully processed. Cannot proceed to querying.")
         return
     
-    # Interactive query loop
-    print("\nYou can now query the processed documents.")
-    print("Available query modes: hybrid, local, global, naive")
-    print("Type 'quit' or 'exit' to end the session.\n")
-    
-    while True:
-        try:
-            question = input("\nEnter your question: ").strip()
-            
-            if question.lower() in ['quit', 'exit', 'q']:
-                print("Goodbye!")
-                break
-            
-            if not question:
-                continue
-            
-            # Ask for query mode
-            mode = input("Query mode (hybrid/local/global/naive) [hybrid]: ").strip() or "hybrid"
-            
-            print(f"\nQuerying with mode '{mode}'...")
-            result = await rag.aquery(question, mode=mode)
-            
-            print("\n" + "=" * 80)
-            print("ANSWER:")
-            print("=" * 80)
-            print(result)
-            print("=" * 80)
-            
-        except KeyboardInterrupt:
-            print("\n\nGoodbye!")
-            break
-        except Exception as e:
-            print(f"Error during query: {e}")
-            traceback.print_exc()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
