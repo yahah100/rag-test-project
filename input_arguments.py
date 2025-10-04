@@ -19,7 +19,7 @@ def parse_arguments():
     model_group.add_argument(
         "--embedding-model", 
         type=str, 
-        default="google/embeddinggemma-300m",
+        default="embeddinggemma:300m",
         help="HuggingFace embedding model for document embeddings"
     )
     model_group.add_argument(

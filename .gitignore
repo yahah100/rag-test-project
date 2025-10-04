@@ -10,3 +10,5 @@ wheels/
 .venv
 chroma_db
 datasets
+output
+rag_storage

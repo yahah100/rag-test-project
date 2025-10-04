@@ -36,7 +36,6 @@ from langchain_core.documents import Document
 from langchain.chains import RetrievalQA
 from langchain_core.prompts import PromptTemplate
 from langchain.schema.embeddings import Embeddings
-from sentence_transformers import SentenceTransformer
 from input_arguments import parse_arguments
 
 # Set up logging
@@ -44,57 +43,70 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-class EmbeddingGemmaEmbeddings(Embeddings):
+class EmbeddingClass(Embeddings):
     """
-    Custom embeddings class using EmbeddingGemma-300M via SentenceTransformers.
+    Custom embeddings class using EmbeddingGemma-300M via Ollama.
     
     This class implements task-specific prompts for optimal retrieval performance:
     - Query prompts: "task: search result | query: {text}"
     - Document prompts: "title: none | text: {text}"
     """
     
-    def __init__(self, model_name: str = "google/embeddinggemma-300m"):
+    def __init__(self, model_name: str = "embeddinggemma:300m", base_url: str = "http://localhost:11434"):
         """
-        Initialize EmbeddingGemma embeddings.
+        Initialize EmbeddingGemma embeddings via Ollama.
         
         Args:
-            model_name (str): HuggingFace model name for EmbeddingGemma
+            model_name (str): Ollama model name for EmbeddingGemma
+            base_url (str): Ollama API base URL
         """
         self.model_name = model_name
-        logger.info(f"Loading EmbeddingGemma model: {model_name}")
+        self.base_url = base_url
+        self.api_url = f"{base_url}/api/embed"
+        
+        logger.info(f"Initializing EmbeddingGemma via Ollama: {model_name}")
+        logger.info(f"Ollama API: {self.api_url}")
         
         try:
-            # Check HuggingFace authentication
-            self._check_hf_auth()
-            
-            # Load the model using SentenceTransformers
-            self.model = SentenceTransformer(model_name, trust_remote_code=True)
-            logger.info("✅ EmbeddingGemma model loaded successfully")
+            # Test connection to Ollama
+            self._test_ollama_connection()
+            logger.info("✅ EmbeddingGemma model ready via Ollama")
         except Exception as e:
-            logger.error(f"❌ Failed to load EmbeddingGemma: {str(e)}")
-            self._show_auth_help()
+            logger.error(f"❌ Failed to connect to Ollama: {str(e)}")
+            self._show_ollama_help()
             raise
     
-    def _check_hf_auth(self):
-        """Check if HuggingFace authentication is set up."""
+    def _test_ollama_connection(self):
+        """Test if Ollama is running and model is available."""
         try:
-            from huggingface_hub import whoami
-            user_info = whoami()
-            logger.info(f"🔐 Authenticated as: {user_info.get('name', 'Unknown')}")
-        except Exception:
-            logger.warning("⚠️ Not authenticated with HuggingFace")
-            self._show_auth_help()
+            response = requests.post(
+                self.api_url,
+                json={
+                    "model": self.model_name,
+                    "prompt": "test"
+                },
+                timeout=10
+            )
             
-    def _show_auth_help(self):
-        """Show authentication help message."""
-        logger.error("🔑 HuggingFace Authentication Required!")
-        logger.error("To use EmbeddingGemma, you need to:")
-        logger.error("1. Accept license: https://huggingface.co/google/embeddinggemma-300m")
-        logger.error("2. Authenticate using one of these methods:")
-        logger.error("   a) Run: python set_hf_token.py")
-        logger.error("   b) Set HUGGINGFACE_HUB_TOKEN environment variable")
-        logger.error("   c) Use: huggingface-cli login (if available)")
-        logger.error("3. Get token from: https://huggingface.co/settings/tokens")
+            if response.status_code == 200:
+                logger.info(f"🔐 Connected to Ollama with model: {self.model_name}")
+            elif response.status_code == 404:
+                raise Exception(f"Model '{self.model_name}' not found in Ollama")
+            else:
+                raise Exception(f"Ollama returned status code: {response.status_code}")
+                
+        except requests.exceptions.ConnectionError:
+            raise Exception("Cannot connect to Ollama - is it running?")
+        except requests.exceptions.Timeout:
+            raise Exception("Ollama connection timeout")
+            
+    def _show_ollama_help(self):
+        """Show Ollama setup help message."""
+        logger.error("🔑 Ollama Setup Required!")
+        logger.error("To use EmbeddingGemma with Ollama, you need to:")
+        logger.error("1. Make sure Ollama is running: ollama serve")
+        logger.error(f"2. Pull the model: ollama pull {self.model_name}")
+        logger.error(f"3. Verify Ollama is accessible at: {self.base_url}")
     
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         """
@@ -111,7 +123,7 @@ class EmbeddingGemmaEmbeddings(Embeddings):
         Returns:
             List[List[float]]: List of embedding vectors
         """
-        formatted_texts = []
+        embeddings = []
         
         for text in texts:
             # Extract title from enhanced content format: [Document: title]
@@ -134,11 +146,31 @@ class EmbeddingGemmaEmbeddings(Embeddings):
             
             # Format with EmbeddingGemma prompt template
             formatted_text = f"title: {title} | text: {content}"
-            formatted_texts.append(formatted_text)
+            
+            # Generate embedding via Ollama API
+            try:
+                response = requests.post(
+                    self.api_url,
+                    json={
+                        "model": self.model_name,
+                        "prompt": formatted_text
+                    },
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    embedding = result.get("embedding", [])
+                    embeddings.append(embedding)
+                else:
+                    logger.error(f"Ollama API error {response.status_code} for document embedding")
+                    raise Exception(f"Failed to get embedding: {response.status_code}")
+                    
+            except Exception as e:
+                logger.error(f"Error getting embedding: {str(e)}")
+                raise
         
-        # Generate embeddings
-        embeddings = self.model.encode(formatted_texts, convert_to_tensor=False)
-        return embeddings.tolist()
+        return embeddings
     
     def embed_query(self, text: str) -> List[float]:
         """
@@ -161,9 +193,28 @@ class EmbeddingGemmaEmbeddings(Embeddings):
         # Format text with query prompt
         formatted_text = f"task: search result | query: {enhanced_query}"
         
-        # Generate embedding
-        embedding = self.model.encode([formatted_text], convert_to_tensor=False)
-        return embedding[0].tolist()
+        # Generate embedding via Ollama API
+        try:
+            response = requests.post(
+                self.api_url,
+                json={
+                    "model": self.model_name,
+                    "prompt": formatted_text
+                },
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                embedding = result.get("embedding", [])
+                return embedding
+            else:
+                logger.error(f"Ollama API error {response.status_code} for query embedding")
+                raise Exception(f"Failed to get embedding: {response.status_code}")
+                
+        except Exception as e:
+            logger.error(f"Error getting query embedding: {str(e)}")
+            raise
     
     def _enhance_query_for_tables(self, query: str) -> str:
         """
@@ -228,7 +279,7 @@ class PDFRAG:
     def __init__(
         self, pdf_folder: str = "datasets", 
                  ollama_model: str = "gemma3:1b",
-                 embedding_model: str = "google/embeddinggemma-300m",
+                 embedding_model: str = "embeddinggemma:300m",
                  persist_directory: str = "./chroma_db",
                  k_similar_chunks: int = 2,
                  enable_vision: bool = True,
@@ -1238,7 +1289,7 @@ class PDFRAG:
         try:
             # Initialize EmbeddingGemma for embeddings
             logger.info("🧠 Loading EmbeddingGemma for embeddings...")
-            self.embeddings = EmbeddingGemmaEmbeddings(model_name=self.embedding_model)
+            self.embeddings = EmbeddingClass(model_name=self.embedding_model)
             
             # Initialize Ollama for text generation
             logger.info(f"🤖 Connecting to Ollama for generation ({self.ollama_model})...")
@@ -1465,7 +1516,7 @@ def main():
     args = parse_arguments()
     
     print("🧠 Enhanced PDF RAG System with Vision")
-    print("🤝 EmbeddingGemma-300M + Ollama + Table + Image Analysis")
+    print("🤝 EmbeddingGemma-300M via Ollama + Table + Image Analysis")
     print("=" * 60)
     
     try:
@@ -1488,12 +1539,12 @@ def main():
         )
         
         print("\n⚙️ Initializing RAG system...")
-        print("📥 This will download EmbeddingGemma-300M on first run...")
+        print("📥 Using Ollama for EmbeddingGemma-300M embeddings...")
         print("🖼️ Vision analysis uses Gemma 3 multimodal capabilities")
         rag_system.initialize_system(force_rebuild=args.force_rebuild)
         
         print("\n🎉 Enhanced RAG system ready!")
-        print("💡 Now using EmbeddingGemma for embeddings + Ollama for generation")
+        print("💡 Now using EmbeddingGemma via Ollama for embeddings + Ollama for generation")
         print("📊 Table extraction enabled with pdfplumber")
         print("🖼️ Image analysis enabled with vision models")
         print("💡 Type 'quit' or 'exit' to stop.\n")
@@ -1570,9 +1621,9 @@ def main():
         print(f"❌ Failed to initialize RAG system: {str(e)}")
         logger.error(f"Initialization error: {str(e)}")
         print("\n💡 Make sure:")
-        print("  - Internet connection (for downloading EmbeddingGemma)")
         print("  - Ollama is running (ollama serve)")
-        print(f"  - Ollama model is available (ollama pull {args.ollama_model})")
+        print(f"  - Embedding model is available (ollama pull {args.embedding_model})")
+        print(f"  - Ollama LLM model is available (ollama pull {args.ollama_model})")
         print(f"  - PDF files are in the {args.pdf_folder} folder")
 
 

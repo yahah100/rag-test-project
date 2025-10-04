@@ -19,9 +19,9 @@ dependencies = [
     "pymupdf",
     "pillow",
     "requests",
-    "ollama",
+    "aiohttp",
     "chromadb",
-    "sentence-transformers",
     "transformers",
-    "torch",
+    "raganything[all]",
+    "mineru[core]",
 ]
