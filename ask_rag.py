@@ -330,17 +330,17 @@ def main():
     """
     parser = argparse.ArgumentParser(description="Simplified PDF RAG System")
     parser.add_argument("--pdf-folder", type=str, default="datasets", help="Path to PDF folder")
-    parser.add_argument("--ollama-model", type=str, default="gemma3:1b", help="Ollama model for generation")
+    parser.add_argument("--ollama-model", type=str, default="gemma3:4b", help="Ollama model for generation")
     parser.add_argument("--embedding-model", type=str, default="embeddinggemma:300m", help="Embedding model")
     parser.add_argument("--persist-directory", type=str, default="./chroma_db", help="Vector store directory")
     parser.add_argument("--k-similar-chunks", type=int, default=2, help="Number of chunks to retrieve")
-    parser.add_argument("--chunk-size", type=int, default=1000, help="Chunk size in characters")
-    parser.add_argument("--chunk-overlap", type=int, default=200, help="Chunk overlap in characters")
+    parser.add_argument("--chunk-size", type=int, default=4000, help="Chunk size in characters")
+    parser.add_argument("--chunk-overlap", type=int, default=500, help="Chunk overlap in characters")
     parser.add_argument("--force-rebuild", action="store_true", help="Force rebuild vector store")
     
     args = parser.parse_args()
     
-    print("🧠 Simplified PDF RAG System")
+    print("🧠 PDF RAG System")
     print("🤝 EmbeddingGemma-300M via Ollama")
     print("=" * 60)
     
