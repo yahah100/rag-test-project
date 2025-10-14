@@ -100,7 +100,7 @@ class PDFRAG:
 
         # only use reports without appendices
         pdf_files = [f for f in pdf_files if "report" in f.name.lower()]
-        pdf_files = [f for f in pdf_files if "appendix" not in f.name.lower()]
+        pdf_files = [f for f in pdf_files if "appendix" not in f.name.lower() and "appendices" not in f.name.lower()]
         logger.info(f"📄 Using {len(pdf_files)} PDF Report files (excluding appendices)")
 
 
