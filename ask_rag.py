@@ -97,6 +97,13 @@ class PDFRAG:
         
         pdf_files = list(self.pdf_folder.glob("**/*.pdf"))
         logger.info(f"📄 Found {len(pdf_files)} PDF files")
+
+        # only use reports without appendices
+        pdf_files = [f for f in pdf_files if "report" in f.name.lower()]
+        pdf_files = [f for f in pdf_files if "appendix" not in f.name.lower()]
+        logger.info(f"📄 Using {len(pdf_files)} PDF Report files (excluding appendices)")
+
+
         
         for pdf_file in pdf_files:
             try:
