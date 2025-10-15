@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Simplified RAG System using EmbeddingGemma + Ollama
 
@@ -14,6 +13,8 @@ from pathlib import Path
 import argparse
 from typing import List, Dict, Any
 
+from pdf_text_extractor.document_chunker import DocumentChunker
+
 # Try to load .env file if it exists
 try:
     from dotenv import load_dotenv
@@ -21,8 +22,6 @@ try:
 except ImportError:
     pass  
 
-import pypdf
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaLLM
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -30,7 +29,7 @@ from langchain.chains import RetrievalQA
 from langchain_core.prompts import PromptTemplate
 from tqdm import tqdm
 from embedding import EmbeddingClass
-
+from pdf_text_extractor.pdf_reader import PDFReader
 
 class PDFRAG:
     """
@@ -74,6 +73,11 @@ class PDFRAG:
         self.llm = None
         self.vectorstore = None
         self.qa_chain = None
+        self.pdf_reader = PDFReader()
+        self.document_chunker = DocumentChunker(
+            chunk_size=self.chunk_size, 
+            chunk_overlap=self.chunk_overlap
+        )
         
         logging.info("🚀 Initializing Simplified RAG System")
         logging.info(f"📚 PDF folder: {self.pdf_folder}")
@@ -99,6 +103,7 @@ class PDFRAG:
         pdf_files = list(self.pdf_folder.glob("**/*.pdf"))
         logging.info(f"📄 Found {len(pdf_files)} PDF files")
 
+        # filter pdf files
         # only use reports without appendices
         pdf_files = [
             f for f in pdf_files 
@@ -110,64 +115,13 @@ class PDFRAG:
 
         for pdf_file in pdf_files:
             try:
-                logging.info(f"📖 Processing: {pdf_file.name}")
-                
-                # Extract text using pypdf
-                with open(pdf_file, 'rb') as file:
-                    pdf_reader = pypdf.PdfReader(file)
-                    text_content = []
-                    
-                    for page_num, page in enumerate(pdf_reader.pages, 1):
-                        page_text = page.extract_text()
-                        if page_text.strip():
-                            text_content.append(f"--- Page {page_num} ---\n{page_text}")
-                    
-                    full_text = "\n\n".join(text_content)
-                    
-                    if full_text.strip():
-                        doc = Document(
-                            page_content=full_text,
-                            metadata={
-                                "source": str(pdf_file),
-                                "filename": pdf_file.name,
-                                "pages": len(pdf_reader.pages)
-                            }
-                        )
-                        documents.append(doc)
-                        logging.info(f"✅ Extracted {len(pdf_reader.pages)} pages from {pdf_file.name}")
-                    else:
-                        logging.warning(f"⚠️ No text found in {pdf_file.name}")
-                        
+                doc = self.pdf_reader.read_pdf(pdf_file)
+                documents.append(doc)
             except Exception as e:
-                logging.error(f"❌ Failed to process {pdf_file.name}: {str(e)}")
-                continue
-        
+                logging.warning(f"Failed to process {pdf_file.name}: {str(e)}")
+           
         logging.info(f"🎉 Successfully loaded {len(documents)} documents")
         return documents
-    
-    def chunk_documents(self, documents: List[Document]) -> List[Document]:
-        """
-        Split documents into smaller chunks for better retrieval.
-        
-        Args:
-            documents (List[Document]): List of documents to chunk
-            
-        Returns:
-            List[Document]: List of chunked documents
-        """
-        logging.info("✂️ Chunking documents")
-        
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap,
-            length_function=len,
-            separators=["\n\n", "\n", " ", ""]
-        )
-        
-        chunked_docs = text_splitter.split_documents(documents)
-        
-        logging.info(f"📦 Created {len(chunked_docs)} chunks from {len(documents)} documents")
-        return chunked_docs
     
     def setup_embeddings_and_llm(self):
         """
@@ -309,7 +263,7 @@ Answer:"""
         else:
             logging.info("📥 Building new vector store from PDFs...")
             documents = self.load_pdfs()
-            chunked_docs = self.chunk_documents(documents)
+            chunked_docs = self.document_chunker.chunk_documents(documents)
             self.create_vectorstore(chunked_docs)
         
         # Setup QA chain
