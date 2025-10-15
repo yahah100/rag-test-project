@@ -22,7 +22,7 @@ class EmbeddingClass(Embeddings):
         """
         self.model_name = model_name
         self.base_url = base_url
-        self.api_url = f"{base_url}/api/embed"
+        self.api_url = f"{base_url}/api/embeddings"
         
         logging.info(f"Initializing EmbeddingGemma via Ollama: {model_name}")
         logging.info(f"Ollama API: {self.api_url}")
@@ -96,6 +96,7 @@ class EmbeddingClass(Embeddings):
                 )
                 
                 if response.status_code == 200:
+                    # Ollama /api/embeddings endpoint returns "embedding" (singular)
                     embedding = response.json()["embedding"]
                     embeddings.append(embedding)
                 else:
@@ -134,6 +135,7 @@ class EmbeddingClass(Embeddings):
             )
             
             if response.status_code == 200:
+                # Ollama /api/embeddings endpoint returns "embedding" (singular)
                 return response.json()["embedding"]
             else:
                 logging.error(f"Failed to generate query embedding: {response.status_code}")
