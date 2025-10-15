@@ -24,4 +24,5 @@ dependencies = [
     "transformers",
     "raganything[all]",
     "mineru[core]",
+    "jupyterlab",
 ]

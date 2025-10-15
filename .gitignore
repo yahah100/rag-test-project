@@ -12,3 +12,5 @@ chroma_db
 datasets
 output
 rag_storage
+uv.lock
+.env
