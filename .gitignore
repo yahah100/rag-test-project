@@ -14,3 +14,4 @@ output
 rag_storage
 uv.lock
 .env
+benchmark_results
