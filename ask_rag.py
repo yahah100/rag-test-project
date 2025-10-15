@@ -28,6 +28,7 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain.chains import RetrievalQA
 from langchain_core.prompts import PromptTemplate
+from tqdm import tqdm
 from embedding import EmbeddingClass
 
 
@@ -74,12 +75,12 @@ class PDFRAG:
         self.vectorstore = None
         self.qa_chain = None
         
-        logger.info("🚀 Initializing Simplified RAG System")
-        logger.info(f"📚 PDF folder: {self.pdf_folder}")
-        logger.info(f"🤖 Ollama model: {ollama_model}")
-        logger.info(f"🧠 Embedding model: {embedding_model}")
-        logger.info(f"💾 Persist directory: {persist_directory}")
-        logger.info(f"🔍 Chunking: {chunk_size} chars (overlap: {chunk_overlap})")
+        logging.info("🚀 Initializing Simplified RAG System")
+        logging.info(f"📚 PDF folder: {self.pdf_folder}")
+        logging.info(f"🤖 Ollama model: {ollama_model}")
+        logging.info(f"🧠 Embedding model: {embedding_model}")
+        logging.info(f"💾 Persist directory: {persist_directory}")
+        logging.info(f"🔍 Chunking: {chunk_size} chars (overlap: {chunk_overlap})")
     
     def load_pdfs(self) -> List[Document]:
         """
@@ -88,26 +89,24 @@ class PDFRAG:
         Returns:
             List[Document]: List of documents with text and metadata
         """
-        logger.info(f"📚 Loading PDFs from {self.pdf_folder}")
+        logging.info(f"📚 Loading PDFs from {self.pdf_folder}")
         documents = []
         
         if not self.pdf_folder.exists():
-            logger.error(f"PDF folder not found: {self.pdf_folder}")
+            logging.error(f"PDF folder not found: {self.pdf_folder}")
             return documents
         
         pdf_files = list(self.pdf_folder.glob("**/*.pdf"))
-        logger.info(f"📄 Found {len(pdf_files)} PDF files")
+        logging.info(f"📄 Found {len(pdf_files)} PDF files")
 
         # only use reports without appendices
         pdf_files = [f for f in pdf_files if "report" in f.name.lower()]
         pdf_files = [f for f in pdf_files if "appendix" not in f.name.lower() and "appendices" not in f.name.lower()]
-        logger.info(f"📄 Using {len(pdf_files)} PDF Report files (excluding appendices)")
+        logging.info(f"📄 Using {len(pdf_files)} PDF Report files (excluding appendices)")
 
-
-        
         for pdf_file in pdf_files:
             try:
-                logger.info(f"📖 Processing: {pdf_file.name}")
+                logging.info(f"📖 Processing: {pdf_file.name}")
                 
                 # Extract text using pypdf
                 with open(pdf_file, 'rb') as file:
@@ -131,15 +130,15 @@ class PDFRAG:
                             }
                         )
                         documents.append(doc)
-                        logger.info(f"✅ Extracted {len(pdf_reader.pages)} pages from {pdf_file.name}")
+                        logging.info(f"✅ Extracted {len(pdf_reader.pages)} pages from {pdf_file.name}")
                     else:
-                        logger.warning(f"⚠️ No text found in {pdf_file.name}")
+                        logging.warning(f"⚠️ No text found in {pdf_file.name}")
                         
             except Exception as e:
-                logger.error(f"❌ Failed to process {pdf_file.name}: {str(e)}")
+                logging.error(f"❌ Failed to process {pdf_file.name}: {str(e)}")
                 continue
         
-        logger.info(f"🎉 Successfully loaded {len(documents)} documents")
+        logging.info(f"🎉 Successfully loaded {len(documents)} documents")
         return documents
     
     def chunk_documents(self, documents: List[Document]) -> List[Document]:
@@ -152,7 +151,7 @@ class PDFRAG:
         Returns:
             List[Document]: List of chunked documents
         """
-        logger.info("✂️ Chunking documents")
+        logging.info("✂️ Chunking documents")
         
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=self.chunk_size,
@@ -163,26 +162,26 @@ class PDFRAG:
         
         chunked_docs = text_splitter.split_documents(documents)
         
-        logger.info(f"📦 Created {len(chunked_docs)} chunks from {len(documents)} documents")
+        logging.info(f"📦 Created {len(chunked_docs)} chunks from {len(documents)} documents")
         return chunked_docs
     
     def setup_embeddings_and_llm(self):
         """
         Initialize EmbeddingGemma for embeddings and Ollama for text generation.
         """
-        logger.info("🔧 Setting up embedding + generation system")
+        logging.info("🔧 Setting up embedding + generation system")
         
         try:
             # Initialize EmbeddingGemma via Ollama
             self.embeddings = EmbeddingClass(model_name=self.embedding_model)
-            logger.info("✅ EmbeddingGemma embeddings initialized")
+            logging.info("✅ EmbeddingGemma embeddings initialized")
             
             # Initialize Ollama LLM for generation
             self.llm = OllamaLLM(model=self.ollama_model)
-            logger.info(f"✅ Ollama LLM ({self.ollama_model}) initialized")
+            logging.info(f"✅ Ollama LLM ({self.ollama_model}) initialized")
             
         except Exception as e:
-            logger.error(f"Failed to initialize models: {str(e)}")
+            logging.error(f"Failed to initialize models: {str(e)}")
             raise
     
     def create_vectorstore(self, documents: List[Document]) -> None:
@@ -192,18 +191,33 @@ class PDFRAG:
         Args:
             documents (List[Document]): Chunked documents to store
         """
-        logger.info("🗄️ Creating vector store with EmbeddingGemma embeddings")
+        logging.info(f"🗄️  Creating vector store with EmbeddingGemma embeddings")
+        logging.info(f"📊 Processing {len(documents)} chunks...")
         
         try:
+            # Process in batches to show progress
+            batch_size = 10
+            total_batches = (len(documents) + batch_size - 1) // batch_size
+            
+            # Initialize vectorstore with first batch
+            first_batch = documents[:batch_size]
+            logging.info(f"🔄 Creating vector store with batch 1/{total_batches} ({len(first_batch)} chunks)")
+            
             self.vectorstore = Chroma.from_documents(
-                documents=documents,
+                documents=first_batch,
                 embedding=self.embeddings,
                 persist_directory=self.persist_directory
             )
-            logger.info("✅ Vector store created and persisted")
+            
+            # Add remaining documents in batches
+            for i in tqdm(range(batch_size, len(documents), batch_size), desc="Processing batches"):
+                batch = documents[i:i + batch_size]
+                self.vectorstore.add_documents(batch)
+            
+            logging.info("✅ Vector store created and persisted")
             
         except Exception as e:
-            logger.error(f"Failed to create vector store: {str(e)}")
+            logging.error(f"Failed to create vector store: {str(e)}")
             raise
     
     def load_existing_vectorstore(self) -> bool:
@@ -215,15 +229,15 @@ class PDFRAG:
         """
         if os.path.exists(self.persist_directory):
             try:
-                logger.info(f"📂 Loading existing vector store from {self.persist_directory}")
+                logging.info(f"📂 Loading existing vector store from {self.persist_directory}")
                 self.vectorstore = Chroma(
                     persist_directory=self.persist_directory,
                     embedding_function=self.embeddings
                 )
-                logger.info("✅ Existing vector store loaded")
+                logging.info("✅ Existing vector store loaded")
                 return True
             except Exception as e:
-                logger.warning(f"Failed to load existing store: {str(e)}")
+                logging.warning(f"Failed to load existing store: {str(e)}")
                 return False
         return False
     
@@ -231,7 +245,7 @@ class PDFRAG:
         """
         Set up the question-answering chain with optimized prompts.
         """
-        logger.info("🔗 Setting up QA chain")
+        logging.info("🔗 Setting up QA chain")
         
         # Create retriever with similarity search
         retriever = self.vectorstore.as_retriever(
@@ -271,7 +285,7 @@ Answer:"""
             return_source_documents=True
         )
         
-        logger.info("✅ QA chain setup complete")
+        logging.info("✅ QA chain setup complete")
     
     def initialize_system(self, force_rebuild: bool = False):
         """
@@ -280,16 +294,16 @@ Answer:"""
         Args:
             force_rebuild (bool): If True, rebuild vector store from scratch
         """
-        logger.info("🚀 Initializing RAG System...")
+        logging.info("🚀 Initializing RAG System...")
         
         # Setup embedding + generation system
         self.setup_embeddings_and_llm()
         
         # Load existing or create new vector store
         if not force_rebuild and self.load_existing_vectorstore():
-            logger.info("✅ Using existing vector store")
+            logging.info("✅ Using existing vector store")
         else:
-            logger.info("📥 Building new vector store from PDFs...")
+            logging.info("📥 Building new vector store from PDFs...")
             documents = self.load_pdfs()
             chunked_docs = self.chunk_documents(documents)
             self.create_vectorstore(chunked_docs)
@@ -297,8 +311,8 @@ Answer:"""
         # Setup QA chain
         self.setup_qa_chain()
         
-        logger.info("🎉 RAG system initialization complete!")
-        logger.info("💡 Ready to answer questions about your PDF documents!")
+        logging.info("🎉 RAG system initialization complete!")
+        logging.info("💡 Ready to answer questions about your PDF documents!")
     
     def query(self, question: str) -> Dict[str, Any]:
         """
@@ -313,7 +327,7 @@ Answer:"""
         if not self.qa_chain:
             raise RuntimeError("System not initialized. Call initialize_system() first.")
         
-        logger.info(f"🔍 Processing query: {question[:50]}...")
+        logging.debug(f"🔍 Processing query: {question[:50]}...")
         
         try:
             result = self.qa_chain.invoke({"query": question})
@@ -324,7 +338,7 @@ Answer:"""
             }
             
         except Exception as e:
-            logger.error(f"Query failed: {str(e)}")
+            logging.error(f"Query failed: {str(e)}")
             return {
                 "answer": f"Error processing query: {str(e)}",
                 "source_documents": []
@@ -336,7 +350,7 @@ def main():
     Main function demonstrating the simplified RAG system.
     """
     parser = argparse.ArgumentParser(description="Simplified PDF RAG System")
-    parser.add_argument("--pdf-folder", type=str, default="datasets", help="Path to PDF folder")
+    parser.add_argument("--pdf-folder", type=str, default="datasets/PMOC_samples", help="Path to PDF folder")
     parser.add_argument("--ollama-model", type=str, default="gemma3:4b", help="Ollama model for generation")
     parser.add_argument("--embedding-model", type=str, default="embeddinggemma:300m", help="Embedding model")
     parser.add_argument("--persist-directory", type=str, default="./chroma_db", help="Vector store directory")
@@ -404,7 +418,7 @@ def main():
     
     except Exception as e:
         print(f"❌ Failed to initialize RAG system: {str(e)}")
-        logger.error(f"Initialization error: {str(e)}")
+        logging.error(f"Initialization error: {str(e)}")
         print("\n💡 Make sure:")
         print("  - Ollama is running (ollama serve)")
         print(f"  - Embedding model is available (ollama pull {args.embedding_model})")
@@ -414,5 +428,4 @@ def main():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    logger = logging.getLogger(__name__)
     main()
