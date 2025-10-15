@@ -41,6 +41,7 @@ class EvaluationResult:
     source_documents: List[str]
     page_reference: str
     category: str
+    source_type: str  # 'text', 'table', or 'unknown'
     scores: Dict[str, float]  # Metric name -> score
     metadata: Dict[str, Any]  # Additional metadata
 
@@ -53,6 +54,7 @@ class BenchmarkSummary:
     failed_queries: int
     average_scores: Dict[str, float]  # Metric name -> average score
     scores_by_category: Dict[str, Dict[str, float]]  # Category -> Metric -> score
+    scores_by_source_type: Dict[str, Dict[str, float]]  # Source type -> Metric -> score
     execution_time_seconds: float
     timestamp: str
 
@@ -203,7 +205,8 @@ class RAGBenchmark:
         question: str,
         expected_answer: str,
         page_reference: str = "",
-        category: str = "general"
+        category: str = "general",
+        source_type: str = "unknown"
     ) -> EvaluationResult:
         """
         Evaluate a single Q&A pair.
@@ -213,6 +216,7 @@ class RAGBenchmark:
             expected_answer: Expected/ground truth answer
             page_reference: Reference to source page
             category: Question category
+            source_type: Type of source ('text', 'table', or 'unknown')
             
         Returns:
             EvaluationResult with scores for all metrics
@@ -248,6 +252,7 @@ class RAGBenchmark:
             source_documents=source_docs,
             page_reference=page_reference,
             category=category,
+            source_type=source_type,
             scores=scores,
             metadata=metadata
         )
@@ -283,7 +288,8 @@ class RAGBenchmark:
                     question=qa["question"],
                     expected_answer=qa["answer"],
                     page_reference=qa.get("page_reference", ""),
-                    category=qa.get("category", "general")
+                    category=qa.get("category", "general"),
+                    source_type=qa.get("source_type", "unknown")
                 )
                 successful += 1
             except Exception as e:
@@ -330,12 +336,26 @@ class RAGBenchmark:
                          if metric.name in r.scores]
                 category_scores[category][metric.name] = sum(scores) / len(scores) if scores else 0.0
         
+        # Compute scores by source type
+        source_type_scores = {}
+        source_types = set(r.source_type for r in self.results)
+        
+        for source_type in source_types:
+            source_type_results = [r for r in self.results if r.source_type == source_type]
+            source_type_scores[source_type] = {}
+            
+            for metric in self.metrics:
+                scores = [r.scores[metric.name] for r in source_type_results 
+                         if metric.name in r.scores]
+                source_type_scores[source_type][metric.name] = sum(scores) / len(scores) if scores else 0.0
+        
         return BenchmarkSummary(
             total_questions=total,
             successful_queries=successful,
             failed_queries=failed,
             average_scores=avg_scores,
             scores_by_category=category_scores,
+            scores_by_source_type=source_type_scores,
             execution_time_seconds=execution_time,
             timestamp=datetime.now().isoformat()
         )
@@ -373,6 +393,15 @@ class RAGBenchmark:
         print("-" * 80)
         for metric_name, score in summary.average_scores.items():
             print(f"  {metric_name:30s}: {score:.3f}")
+        
+        print("\n📊 Scores by Source Type:")
+        print("-" * 80)
+        for source_type, scores in summary.scores_by_source_type.items():
+            # Count questions of this source type
+            count = sum(1 for r in self.results if r.source_type == source_type)
+            print(f"\n  Source Type: {source_type} ({count} questions)")
+            for metric_name, score in scores.items():
+                print(f"    {metric_name:28s}: {score:.3f}")
         
         print("\n📊 Scores by Category:")
         print("-" * 80)
