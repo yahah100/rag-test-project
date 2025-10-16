@@ -1,0 +1,34 @@
+services:
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all  # Use all available GPUs, equivalent to --gpus=all
+              capabilities: [gpu]
+    volumes:
+      - ollama:/root/.ollama  # Mount the named volume to persist model data
+    ports:
+      - "11434:11434"  # Map port 11434
+    restart: unless-stopped  # Restart the container unless explicitly stopped
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:latest
+    container_name: open-webui
+    ports:
+      - "3000:8080"  # Map host port 3000 to container port 8080
+    depends_on:
+      - ollama  # Ensure Ollama starts before open-webui
+    environment:
+      - 'OLLAMA_BASE_URL=http://ollama:11434' # Tell open-webui where to find Ollama
+      - 'WEBUI_SECRET_KEY=8b6cdfdb3145e61acddca3a48532ac64d9525f5bf9bc1a7d24289ecd24111114' # You can use `openssl rand -hex 32` to generate one
+    volumes:
+      - open-webui:/app/backend/data # Persist open-webui data
+    restart: unless-stopped
+
+volumes:
+  ollama:
+  open-webui:
